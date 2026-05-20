@@ -1,0 +1,27 @@
+@import '@mantine/core/styles.css';
+@import '@mantine/notifications/styles.css';
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+}
+
+/* 网盘列表行：可拖拽单元格会获得焦点，Shift 多选后浏览器/Mantine 会画焦点框，此处按产品需求去掉 */
+[data-drive-node-row]:focus,
+[data-drive-node-row]:focus-visible,
+[data-drive-node-row] td:focus,
+[data-drive-node-row] td:focus-visible,
+[data-drive-node-row] a:focus,
+[data-drive-node-row] a:focus-visible {
+  outline: none;
+}
+
+[data-drive-node-row]:focus-visible,
+[data-drive-node-row] td:focus-visible {
+  box-shadow: none;
+}

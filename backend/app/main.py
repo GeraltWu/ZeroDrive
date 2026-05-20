@@ -1,0 +1,147 @@
+from __future__ import annotations
+
+import pathlib
+from contextlib import asynccontextmanager
+
+from dotenv import load_dotenv
+from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy import select
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+from app.api.routes import auth, bot, nodes
+from app.core.config import get_settings
+from app.db.base import Base
+from app.db.session import AsyncSessionLocal, engine
+import app.models.storage  # noqa: F401 — 注册 Blob / StorageBackend 到 metadata
+from app.models.user import User
+from app.core.security import hash_password
+from app.schemas.response import err, ok
+from app.services.bot_path import PathNotFoundError, PathValidationError
+from app.services.bot_service import NoImagesError
+from app.services.node_service import (
+    ConflictError,
+    NodeNotFoundError,
+    NodeValidationError,
+    create_user_root,
+    get_user_root,
+)
+from app.services.storage import ensure_data_root
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    load_dotenv()
+    settings = get_settings()
+    pathlib.Path(settings.sqlite_path).parent.mkdir(parents=True, exist_ok=True)
+    ensure_data_root()
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    async with AsyncSessionLocal() as session:
+        admin = (
+            await session.execute(select(User).where(User.username == settings.admin_username))
+        ).scalar_one_or_none()
+        if admin is None:
+            admin = User(
+                username=settings.admin_username,
+                password_hash=hash_password(settings.admin_password),
+            )
+            session.add(admin)
+            await session.commit()
+        try:
+            await get_user_root(session, admin.id)
+        except NodeNotFoundError:
+            await create_user_root(session, admin.id)
+            await session.commit()
+    yield
+    await engine.dispose()
+
+
+app = FastAPI(title="ZeroDrive API", lifespan=lifespan)
+settings = get_settings()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origin_list,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(_, exc: StarletteHTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=err(exc.status_code, str(exc.detail)).model_dump(mode="json"),
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(_, exc: RequestValidationError):
+    errors = [{"loc": list(x.get("loc", ())), "msg": x.get("msg", "")} for x in exc.errors()]
+    return JSONResponse(
+        status_code=422,
+        content=err(422, "参数校验失败", data=errors).model_dump(mode="json"),
+    )
+
+
+@app.exception_handler(NodeNotFoundError)
+async def node_not_found_handler(_, exc: NodeNotFoundError):
+    return JSONResponse(
+        status_code=404,
+        content=err(40404, "节点不存在").model_dump(mode="json"),
+    )
+
+
+@app.exception_handler(ConflictError)
+async def conflict_handler(_, exc: ConflictError):
+    return JSONResponse(
+        status_code=409,
+        content=err(40901, str(exc) or "资源冲突").model_dump(mode="json"),
+    )
+
+
+@app.exception_handler(NodeValidationError)
+async def node_validation_handler(_, exc: NodeValidationError):
+    return JSONResponse(
+        status_code=400,
+        content=err(40001, str(exc)).model_dump(mode="json"),
+    )
+
+
+@app.exception_handler(PathValidationError)
+async def path_validation_handler(_, exc: PathValidationError):
+    return JSONResponse(
+        status_code=400,
+        content=err(40002, str(exc)).model_dump(mode="json"),
+    )
+
+
+@app.exception_handler(PathNotFoundError)
+async def path_not_found_handler(_, exc: PathNotFoundError):
+    prefix = exc.resolved_prefix or "根"
+    msg = f"路径不存在：{prefix}/{exc.segment}" if prefix != "根" else f"路径不存在：{exc.segment}"
+    return JSONResponse(
+        status_code=404,
+        content=err(40402, msg).model_dump(mode="json"),
+    )
+
+
+@app.exception_handler(NoImagesError)
+async def no_images_handler(_, _exc: NoImagesError):
+    return JSONResponse(
+        status_code=404,
+        content=err(40403, "该文件夹内没有符合条件的图片").model_dump(mode="json"),
+    )
+
+
+@app.get("/api/health")
+async def health():
+    return JSONResponse(content=ok({"status": "ok"}).model_dump(mode="json"))
+
+
+app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
+app.include_router(bot.router, prefix="/api/bot", tags=["bot"])
+app.include_router(nodes.router, prefix="/api/nodes", tags=["nodes"])

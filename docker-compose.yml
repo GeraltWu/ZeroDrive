@@ -1,0 +1,35 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: zerodrive-backend
+    environment:
+      - DATA_ROOT=/app/data/files
+      - SQLITE_PATH=/app/data/zerodrive.db
+      - ADMIN_USERNAME=admin
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:123}
+      - JWT_SECRET=${JWT_SECRET:-change-me-to-a-long-random-secret}
+      - JWT_ALGORITHM=HS256
+      - JWT_EXPIRE_MINUTES=525,600
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost}
+      - BOT_API_TOKEN=${BOT_API_TOKEN:-qqbotdesu}
+      - BOT_DOWNLOAD_EXPIRE_SECONDS=${BOT_DOWNLOAD_EXPIRE_SECONDS:-300}
+    volumes:
+      - zerodrive-data:/app/data
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: zerodrive-frontend
+    ports:
+      - "${PORT:-8600}:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  zerodrive-data:
+    driver: local

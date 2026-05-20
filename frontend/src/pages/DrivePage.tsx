@@ -1,0 +1,1212 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { RefObject } from 'react'
+import {
+  ActionIcon,
+  Anchor,
+  AppShell,
+  Box,
+  Button,
+  Group,
+  Menu,
+  Paper,
+  Table,
+  Text,
+  TextInput,
+  Title,
+} from '@mantine/core'
+import { useMergedRef } from '@mantine/hooks'
+import { modals } from '@mantine/modals'
+import { notifications } from '@mantine/notifications'
+import {
+  IconCopy,
+  IconDots,
+  IconInfoCircle,
+  IconPencil,
+  IconPlayerPlay,
+  IconTrash,
+  IconUpload,
+} from '@tabler/icons-react'
+import {
+  type CollisionDetection,
+  DndContext,
+  type DragStartEvent,
+  PointerSensor,
+  pointerWithin,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core'
+import { CSS } from '@dnd-kit/utilities'
+import { DriveContentPane } from '../components/drive/DriveContentPane'
+import { DriveContextMenu } from '../components/drive/DriveContextMenu'
+import { DriveSidebar } from '../components/drive/DriveSidebar'
+import { DriveToolbar } from '../components/drive/DriveToolbar'
+import { MediaPreviewModal } from '../components/drive/MediaPreviewModal'
+import { NodePropertiesModal } from '../components/drive/NodePropertiesModal'
+import { copyTextToClipboard } from '../lib/clipboard'
+import { FileTypeIcon } from '../lib/fileTypeIcon'
+import * as driveApi from '../lib/driveApi'
+import { getMediaPreviewKind, type MediaPreviewKind } from '../lib/mediaPreview'
+import type { BreadcrumbItem, DriveNode, FolderTreeItem } from '../types/node'
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`
+  const u = ['KB', 'MB', 'GB']
+  let v = n / 1024
+  let i = 0
+  while (v >= 1024 && i < u.length - 1) {
+    v /= 1024
+    i += 1
+  }
+  return `${v.toFixed(1)} ${u[i]}`
+}
+
+function crumbLabel(c: BreadcrumbItem, rootId: string): string {
+  if (c.id === rootId) return '全部文件'
+  return c.name === '根' ? '全部文件' : c.name || '文件夹'
+}
+
+type DropTargetType = 'breadcrumb' | 'tree' | 'row'
+
+function toDropTargetFolderId(dropId: string): string | null {
+  if (dropId.startsWith('row-folder:')) return dropId.slice('row-folder:'.length)
+  if (dropId.startsWith('crumb-folder:')) return dropId.slice('crumb-folder:'.length)
+  if (dropId.startsWith('tree-folder:')) return dropId.slice('tree-folder:'.length)
+  return null
+}
+
+function NodeTableRow({
+  node,
+  onEnterFolder,
+  onDownload,
+  onRename,
+  onDelete,
+  isNameEditing,
+  nameEditValue,
+  onNameEditChange,
+  onNameEditCommit,
+  onNameEditBlurCommit,
+  onNameEditCancel,
+  nameInputRef,
+  selected,
+  onRowClick,
+  onRowContextMenu,
+  onRowDoubleClick,
+  openMediaPreview,
+  onProperties,
+}: {
+  node: DriveNode
+  onEnterFolder: (n: DriveNode) => void
+  onDownload: (n: DriveNode) => void
+  onRename: (n: DriveNode) => void
+  onDelete: (n: DriveNode) => void
+  isNameEditing: boolean
+  nameEditValue: string
+  onNameEditChange: (v: string) => void
+  onNameEditCommit: () => void
+  onNameEditBlurCommit: () => void
+  onNameEditCancel: () => void
+  nameInputRef: RefObject<HTMLInputElement | null>
+  selected: boolean
+  onRowClick: (e: React.MouseEvent, node: DriveNode) => void
+  onRowContextMenu: (e: React.MouseEvent, node: DriveNode) => void
+  onRowDoubleClick: (e: React.MouseEvent, node: DriveNode) => void
+  openMediaPreview: (n: DriveNode) => void
+  onProperties: (n: DriveNode) => void
+}) {
+  const drag = useDraggable({
+    id: `item:${node.id}`,
+    disabled: isNameEditing,
+  })
+  const drop = useDroppable({
+    id: `row-folder:${node.id}`,
+    disabled: !node.is_folder,
+    data: {
+      dropType: 'row' as DropTargetType,
+    },
+  })
+  const ref = useMergedRef(drag.setNodeRef, drop.setNodeRef)
+
+  const style = {
+    transform: CSS.Translate.toString(drag.transform),
+    opacity: drag.isDragging ? 0.6 : 1,
+    background: drop.isOver
+      ? 'var(--mantine-color-blue-light)'
+      : selected
+        ? 'var(--mantine-color-blue-0)'
+        : undefined,
+  }
+
+  return (
+    <Table.Tr
+      ref={ref as React.Ref<HTMLTableRowElement>}
+      data-drive-node-row
+      style={style}
+      onMouseDown={(e) => {
+        // Shift+点击时浏览器会扩展文本选中范围；阻止默认即可保留多选、不选中文字
+        if (e.shiftKey) e.preventDefault()
+      }}
+      onClick={(e) => onRowClick(e, node)}
+      onDoubleClick={(e) => onRowDoubleClick(e, node)}
+      onContextMenu={(e) => onRowContextMenu(e, node)}
+    >
+      <Table.Td
+        {...(isNameEditing ? {} : { ...drag.listeners, ...drag.attributes })}
+        style={{
+          cursor: isNameEditing ? undefined : 'grab',
+          verticalAlign: 'middle',
+        }}
+      >
+        {isNameEditing ? (
+          <Box
+            onPointerDown={(e) => e.stopPropagation()}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              minWidth: 0,
+              maxWidth: '100%',
+              width: '100%',
+              boxSizing: 'border-box',
+              padding: '0 8px',
+              borderRadius: 'var(--mantine-radius-sm)',
+              backgroundColor: 'var(--mantine-color-blue-light)',
+              border: '1px solid var(--mantine-color-blue-filled)',
+              boxShadow: '0 0 0 2px var(--mantine-color-blue-light)',
+            }}
+          >
+            <FileTypeIcon node={node} size={18} style={{ flexShrink: 0 }} />
+            <TextInput
+              ref={nameInputRef}
+              variant="unstyled"
+              value={nameEditValue}
+              onChange={(e) => onNameEditChange(e.currentTarget.value)}
+              onBlur={() => onNameEditBlurCommit()}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  onNameEditCommit()
+                }
+                if (e.key === 'Escape') {
+                  e.preventDefault()
+                  onNameEditCancel()
+                }
+              }}
+              styles={{
+                root: {
+                  flex: 1,
+                  minWidth: 0,
+                },
+                input: {
+                  height: 22,
+                  minHeight: 22,
+                  maxHeight: 22,
+                  lineHeight: '22px',
+                  padding: 0,
+                  fontSize: 'var(--mantine-font-size-sm)',
+                  fontWeight: 500,
+                  color: 'var(--mantine-color-text)',
+                  border: 'none',
+                  backgroundColor: 'transparent',
+                  outline: 'none',
+                  boxShadow: 'none',
+                },
+              }}
+            />
+          </Box>
+        ) : (
+          <Anchor
+            inherit
+            onClick={(e) => {
+              e.preventDefault()
+              if (node.is_folder) onEnterFolder(node)
+              // 文件名单击仅配合行多选；下载用「点击下载」列；音视频双击预览
+            }}
+          >
+            <Group gap={6} wrap="nowrap" align="center" display="inline-flex">
+              <FileTypeIcon node={node} size={18} />
+              <Text span inherit component="span">
+                {node.is_folder ? node.name || '文件夹' : node.name}
+              </Text>
+            </Group>
+          </Anchor>
+        )}
+      </Table.Td>
+      <Table.Td>{node.is_folder ? '—' : formatBytes(node.size)}</Table.Td>
+      <Table.Td>{new Date(node.updated_at).toLocaleString()}</Table.Td>
+      <Table.Td>
+        {node.is_folder ? (
+          '—'
+        ) : (
+          <Anchor size="sm" href={driveApi.downloadUrl(node.id)} onClick={(e) => e.stopPropagation()}>
+            点击下载
+          </Anchor>
+        )}
+      </Table.Td>
+      <Table.Td w={60}>
+        <Menu shadow="md" width={200}>
+          <Menu.Target>
+            <ActionIcon variant="subtle" aria-label="更多">
+              <IconDots size={18} />
+            </ActionIcon>
+          </Menu.Target>
+          <Menu.Dropdown>
+            {!node.is_folder && getMediaPreviewKind(node.name) && (
+              <Menu.Item
+                leftSection={<IconPlayerPlay size={14} />}
+                onClick={() => openMediaPreview(node)}
+              >
+                预览
+              </Menu.Item>
+            )}
+            {!node.is_folder && (
+              <Menu.Item leftSection={<IconUpload size={14} />} onClick={() => onDownload(node)}>
+                下载
+              </Menu.Item>
+            )}
+            {!node.is_folder && (
+              <Menu.Item
+                leftSection={<IconCopy size={14} />}
+                onClick={() => {
+                  void (async () => {
+                    const ok = await copyTextToClipboard(driveApi.absoluteDownloadUrl(node.id))
+                    notifications.show({
+                      message: ok ? '下载链接已复制' : '复制失败，请手动复制',
+                      color: ok ? 'green' : 'red',
+                    })
+                  })()
+                }}
+              >
+                复制下载链接
+              </Menu.Item>
+            )}
+            <Menu.Item
+              leftSection={<IconCopy size={14} />}
+              onClick={() => {
+                void (async () => {
+                  const ok = await copyTextToClipboard(node.name)
+                  notifications.show({
+                    message: ok ? '文件名已复制' : '复制失败，请手动复制',
+                    color: ok ? 'green' : 'red',
+                  })
+                })()
+              }}
+            >
+              复制文件名
+            </Menu.Item>
+            <Menu.Item leftSection={<IconInfoCircle size={14} />} onClick={() => onProperties(node)}>
+              属性
+            </Menu.Item>
+            <Menu.Item
+              leftSection={<IconPencil size={14} />}
+              onClick={() => {
+                window.setTimeout(() => onRename(node), 0)
+              }}
+            >
+              重命名
+            </Menu.Item>
+            <Menu.Item
+              color="red"
+              leftSection={<IconTrash size={14} />}
+              onClick={() => onDelete(node)}
+            >
+              删除
+            </Menu.Item>
+          </Menu.Dropdown>
+        </Menu>
+      </Table.Td>
+    </Table.Tr>
+  )
+}
+
+export function DrivePage() {
+  const [rootId, setRootId] = useState<string | null>(null)
+  const [nav, setNav] = useState<{ stack: string[]; index: number } | null>(null)
+  const [rows, setRows] = useState<DriveNode[]>([])
+  const [crumbs, setCrumbs] = useState<BreadcrumbItem[]>([])
+  const [flatFolders, setFlatFolders] = useState<FolderTreeItem[]>([])
+  const [editingNodeId, setEditingNodeId] = useState<string | null>(null)
+  const [editDraft, setEditDraft] = useState('')
+  const [isFileDragActive, setIsFileDragActive] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState({ done: 0, total: 0 })
+  const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null)
+  const [draggingNodeIds, setDraggingNodeIds] = useState<string[]>([])
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
+  const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null)
+  const [contextMenu, setContextMenu] = useState<{
+    opened: boolean
+    x: number
+    y: number
+    targetId: string | null
+  }>({
+    opened: false,
+    x: 0,
+    y: 0,
+    targetId: null,
+  })
+  const [mediaPreview, setMediaPreview] = useState<{
+    node: DriveNode
+    kind: MediaPreviewKind
+  } | null>(null)
+  const [propertiesNode, setPropertiesNode] = useState<DriveNode | null>(null)
+  const [reparsingMeta, setReparsingMeta] = useState(false)
+  const nameInputRef = useRef<HTMLInputElement>(null)
+  const fileDragDepthRef = useRef(0)
+  /** 避免从 Menu 进入编辑时，关闭菜单触发的瞬时 blur 立刻提交并退出编辑 */
+  const nameEditBlurOkRef = useRef(false)
+
+  const folderId = useMemo(
+    () => (nav && nav.stack.length > 0 ? nav.stack[nav.index]! : null),
+    [nav],
+  )
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+  )
+  const folderParentMap = useMemo(
+    () => new Map(flatFolders.map((f) => [f.id, f.parent_id] as const)),
+    [flatFolders],
+  )
+  const rowsById = useMemo(() => new Map(rows.map((r) => [r.id, r] as const)), [rows])
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds])
+  const selectedNodes = useMemo(
+    () => selectedIds.map((id) => rowsById.get(id)).filter((n): n is DriveNode => !!n),
+    [selectedIds, rowsById],
+  )
+  const contextMenuTargetNode = useMemo(() => {
+    const tid = contextMenu.targetId
+    if (!tid) return null
+    return rowsById.get(tid) ?? null
+  }, [contextMenu.targetId, rowsById])
+  const contextMenuPreviewTarget = useMemo(() => {
+    if (!contextMenuTargetNode || contextMenuTargetNode.is_folder) return null
+    const kind = getMediaPreviewKind(contextMenuTargetNode.name)
+    return kind ? { node: contextMenuTargetNode, kind } : null
+  }, [contextMenuTargetNode])
+  const collisionDetection = useCallback<CollisionDetection>((args) => {
+    const collisions = pointerWithin(args)
+
+    const priority: Record<DropTargetType, number> = {
+      breadcrumb: 0,
+      tree: 1,
+      row: 2,
+    }
+    const getDropType = (id: string | number): DropTargetType => {
+      const container = args.droppableContainers.find((c) => c.id === id)
+      const t = container?.data.current?.dropType
+      if (t === 'breadcrumb' || t === 'tree' || t === 'row') return t
+      return 'row'
+    }
+
+    return [...collisions].sort((a, b) => {
+      const ap = priority[getDropType(a.id)]
+      const bp = priority[getDropType(b.id)]
+      if (ap !== bp) return ap - bp
+      const av = typeof a.data?.value === 'number' ? a.data.value : 0
+      const bv = typeof b.data?.value === 'number' ? b.data.value : 0
+      return bv - av
+    })
+  }, [])
+
+  const refresh = useCallback(async () => {
+    if (!folderId) return
+    const [list, bc, tree] = await Promise.all([
+      driveApi.listChildren(folderId),
+      driveApi.fetchBreadcrumb(folderId),
+      driveApi.fetchFolderTree(),
+    ])
+    setRows(list)
+    setCrumbs(bc)
+    setFlatFolders(tree)
+  }, [folderId])
+
+  const selectRange = useCallback(
+    (fromId: string, toId: string) => {
+      const from = rows.findIndex((r) => r.id === fromId)
+      const to = rows.findIndex((r) => r.id === toId)
+      if (from < 0 || to < 0) return [toId]
+      const [start, end] = from <= to ? [from, to] : [to, from]
+      return rows.slice(start, end + 1).map((r) => r.id)
+    },
+    [rows],
+  )
+
+  const applyRowSelection = useCallback(
+    (nodeId: string, e: Pick<React.MouseEvent, 'shiftKey' | 'ctrlKey' | 'metaKey'>) => {
+      if (e.shiftKey) {
+        const anchor = selectionAnchorId ?? nodeId
+        const range = selectRange(anchor, nodeId)
+        setSelectedIds(range)
+        setSelectionAnchorId(anchor)
+        return
+      }
+      if (e.ctrlKey || e.metaKey) {
+        setSelectedIds((prev) =>
+          prev.includes(nodeId) ? prev.filter((id) => id !== nodeId) : [...prev, nodeId],
+        )
+        setSelectionAnchorId(nodeId)
+        return
+      }
+      setSelectedIds([nodeId])
+      setSelectionAnchorId(nodeId)
+    },
+    [selectRange, selectionAnchorId],
+  )
+
+  useEffect(() => {
+    ;(async () => {
+      const id = await driveApi.fetchRootId()
+      setRootId(id)
+      setNav({ stack: [id], index: 0 })
+    })()
+  }, [])
+
+  useEffect(() => {
+    const id = requestAnimationFrame(() => {
+      setEditingNodeId(null)
+      setEditDraft('')
+      setSelectedIds([])
+      setSelectionAnchorId(null)
+      setContextMenu({ opened: false, x: 0, y: 0, targetId: null })
+      if (folderId) void refresh()
+    })
+    return () => cancelAnimationFrame(id)
+  }, [folderId, refresh])
+
+  useEffect(() => {
+    if (!editingNodeId) {
+      nameEditBlurOkRef.current = false
+      return
+    }
+    nameEditBlurOkRef.current = false
+    const t = window.setTimeout(() => {
+      nameEditBlurOkRef.current = true
+    }, 160)
+    return () => window.clearTimeout(t)
+  }, [editingNodeId])
+
+  useEffect(() => {
+    if (!editingNodeId) return
+    const focusNow = () => {
+      nameInputRef.current?.focus()
+      nameInputRef.current?.select()
+    }
+    const t0 = window.setTimeout(focusNow, 0)
+    const t1 = window.setTimeout(() => {
+      if (document.activeElement !== nameInputRef.current) focusNow()
+    }, 200)
+    return () => {
+      window.clearTimeout(t0)
+      window.clearTimeout(t1)
+    }
+  }, [editingNodeId])
+
+  const clearNameEdit = useCallback(() => {
+    setEditingNodeId(null)
+    setEditDraft('')
+  }, [])
+
+  const commitNameEdit = useCallback(async () => {
+    if (!editingNodeId) return
+    const node = rows.find((r) => r.id === editingNodeId)
+    if (!node) {
+      clearNameEdit()
+      return
+    }
+    const next = editDraft.trim()
+    if (!next) {
+      notifications.show({ color: 'red', message: '名称不能为空' })
+      requestAnimationFrame(() => nameInputRef.current?.focus())
+      return
+    }
+    if (next === node.name) {
+      clearNameEdit()
+      return
+    }
+    try {
+      await driveApi.renameNode(editingNodeId, next)
+      notifications.show({ color: 'green', message: '已更新' })
+      clearNameEdit()
+      await refresh()
+    } catch {
+      /* 冲突等：保持编辑 */
+    }
+  }, [editingNodeId, editDraft, rows, clearNameEdit, refresh])
+
+  const commitNameEditFromBlur = useCallback(() => {
+    if (!nameEditBlurOkRef.current) return
+    void commitNameEdit()
+  }, [commitNameEdit])
+
+  const cancelNameEdit = useCallback(() => {
+    clearNameEdit()
+  }, [clearNameEdit])
+
+  const startRename = useCallback((node: DriveNode) => {
+    setEditingNodeId(node.id)
+    setEditDraft(node.name)
+  }, [])
+
+  const suggestNewFolderName = useCallback(() => {
+    const base = '新建文件夹'
+    let name = base
+    let i = 2
+    while (rows.some((r) => r.name === name)) {
+      name = `${base} (${i})`
+      i++
+    }
+    return name
+  }, [rows])
+
+  const navigateTo = useCallback((id: string) => {
+    setNav((prev) => {
+      if (!prev) return { stack: [id], index: 0 }
+      if (prev.stack[prev.index] === id) return prev
+      const stack = [...prev.stack.slice(0, prev.index + 1), id]
+      return { stack, index: stack.length - 1 }
+    })
+  }, [])
+
+  const goBack = useCallback(() => {
+    setNav((prev) =>
+      prev && prev.index > 0 ? { ...prev, index: prev.index - 1 } : prev,
+    )
+  }, [])
+
+  const goForward = useCallback(() => {
+    setNav((prev) =>
+      prev && prev.index < prev.stack.length - 1
+        ? { ...prev, index: prev.index + 1 }
+        : prev,
+    )
+  }, [])
+
+  const goUp = useCallback(() => {
+    if (!rootId || crumbs.length < 2) return
+    const parentId = crumbs[crumbs.length - 2]?.id
+    if (!parentId) return
+    navigateTo(parentId)
+  }, [rootId, crumbs, navigateTo])
+
+  const onBreadcrumbSegment = useCallback(
+    (segmentIndex: number) => {
+      if (segmentIndex >= crumbs.length - 1) return
+      const targetId = crumbs[segmentIndex]?.id
+      if (!targetId) return
+      navigateTo(targetId)
+    },
+    [crumbs, navigateTo],
+  )
+
+  const onTreeSelect = useCallback(
+    async (id: string) => {
+      navigateTo(id)
+    },
+    [navigateTo],
+  )
+
+  const enterFolder = (n: DriveNode) => {
+    if (!n.is_folder) return
+    navigateTo(n.id)
+  }
+
+  async function handleDragEnd(e: DragEndEvent) {
+    const { active, over } = e
+    setDraggingNodeId(null)
+    const activeDraggingIds = draggingNodeIds.length > 0 ? draggingNodeIds : []
+    setDraggingNodeIds([])
+    if (!over) return
+    const aid = String(active.id)
+    const oid = String(over.id)
+    if (!aid.startsWith('item:')) return
+    const nodeId = aid.slice(5)
+    const targetFolderId = toDropTargetFolderId(oid)
+    if (!targetFolderId) return
+    const idsToMove = activeDraggingIds.length > 0 ? activeDraggingIds : [nodeId]
+
+    let success = 0
+    let failed = 0
+    let skipped = 0
+    for (const id of idsToMove) {
+      if (id === targetFolderId) {
+        skipped += 1
+        continue
+      }
+      const dragged = rowsById.get(id)
+      if (!dragged) {
+        failed += 1
+        continue
+      }
+      if (dragged.parent_id === targetFolderId) {
+        skipped += 1
+        continue
+      }
+      if (dragged.is_folder) {
+        let cur: string | null | undefined = targetFolderId
+        let invalid = false
+        while (cur) {
+          if (cur === id) {
+            invalid = true
+            break
+          }
+          cur = folderParentMap.get(cur)
+        }
+        if (invalid) {
+          failed += 1
+          continue
+        }
+      }
+      try {
+        await driveApi.moveNode(id, targetFolderId)
+        success += 1
+      } catch {
+        failed += 1
+      }
+    }
+
+    if (success > 0) {
+      notifications.show({
+        color: failed > 0 ? 'yellow' : 'green',
+        message:
+          idsToMove.length === 1
+            ? '已移动'
+            : `批量移动完成：成功 ${success}，失败 ${failed}，跳过 ${skipped}`,
+      })
+      await refresh()
+      const movedSet = new Set(idsToMove)
+      setSelectedIds((prev) => prev.filter((id) => !movedSet.has(id)))
+    } else if (failed > 0) {
+      notifications.show({
+        color: 'red',
+        message: '批量移动失败，请检查目标目录或命名冲突',
+      })
+    } else if (skipped > 0) {
+      notifications.show({ color: 'gray', message: '所选项目已在目标目录或不可移动' })
+    }
+  }
+
+  const handleDragStart = useCallback(
+    (e: DragStartEvent) => {
+      const aid = String(e.active.id)
+      if (!aid.startsWith('item:')) {
+        setDraggingNodeId(null)
+        setDraggingNodeIds([])
+        return
+      }
+      const id = aid.slice(5)
+      setDraggingNodeId(id)
+      if (selectedSet.has(id) && selectedIds.length > 1) {
+        setDraggingNodeIds(selectedIds)
+      } else {
+        setDraggingNodeIds([id])
+      }
+    },
+    [selectedIds, selectedSet],
+  )
+
+  const handleDragCancel = useCallback(() => {
+    setDraggingNodeId(null)
+    setDraggingNodeIds([])
+  }, [])
+
+  const doDelete = (node: DriveNode) => {
+    modals.openConfirmModal({
+      title: '删除确认',
+      children: (
+        <Text size="sm">
+          确定删除「{node.name || '项'}」？
+          {node.is_folder ? '（将删除其中所有内容）' : ''}
+        </Text>
+      ),
+      labels: { confirm: '删除', cancel: '取消' },
+      confirmProps: { color: 'red' },
+      onConfirm: async () => {
+        try {
+          await driveApi.deleteNode(node.id)
+          notifications.show({ color: 'green', message: '已删除' })
+          setSelectedIds((prev) => prev.filter((id) => id !== node.id))
+          if (rootId && node.id === folderId) {
+            navigateTo(rootId)
+          } else {
+            await refresh()
+          }
+        } catch {
+          /* noop */
+        }
+      },
+    })
+  }
+
+  const batchDelete = useCallback(() => {
+    if (selectedNodes.length === 0) return
+    const ids = selectedNodes.map((n) => n.id)
+    modals.openConfirmModal({
+      title: '批量删除确认',
+      children: <Text size="sm">确定删除已选的 {ids.length} 项？此操作不可撤销。</Text>,
+      labels: { confirm: '删除', cancel: '取消' },
+      confirmProps: { color: 'red' },
+      onConfirm: async () => {
+        let success = 0
+        let failed = 0
+        for (const id of ids) {
+          try {
+            await driveApi.deleteNode(id)
+            success += 1
+          } catch {
+            failed += 1
+          }
+        }
+        notifications.show({
+          color: failed > 0 ? 'yellow' : 'green',
+          message: `批量删除完成：成功 ${success}，失败 ${failed}`,
+        })
+        setSelectedIds([])
+        setSelectionAnchorId(null)
+        await refresh()
+      },
+    })
+  }, [refresh, selectedNodes])
+
+  const handleRowClick = useCallback(
+    (e: React.MouseEvent, node: DriveNode) => {
+      if (editingNodeId === node.id) return
+      applyRowSelection(node.id, e)
+      setContextMenu({ opened: false, x: 0, y: 0, targetId: null })
+    },
+    [applyRowSelection, editingNodeId],
+  )
+
+  const handleRowContextMenu = useCallback(
+    (e: React.MouseEvent, node: DriveNode) => {
+      e.preventDefault()
+      if (!selectedSet.has(node.id)) {
+        setSelectedIds([node.id])
+        setSelectionAnchorId(node.id)
+      }
+      setContextMenu({
+        opened: true,
+        x: e.clientX,
+        y: e.clientY,
+        targetId: node.id,
+      })
+    },
+    [selectedSet],
+  )
+
+  const clearSelectionIfOutsideRow = useCallback((e: React.PointerEvent) => {
+    const t = e.target as HTMLElement | null
+    if (!t) return
+    if (t.closest('[data-drive-node-row]')) return
+    if (t.closest('[role="menu"]')) return
+    if (t.closest('[role="dialog"]')) return
+    setSelectedIds([])
+    setSelectionAnchorId(null)
+    setContextMenu({ opened: false, x: 0, y: 0, targetId: null })
+  }, [])
+  const closeContextMenu = useCallback(() => {
+    setContextMenu((prev) => ({ ...prev, opened: false, targetId: null }))
+  }, [])
+
+  const doDownload = (node: DriveNode) => {
+    window.open(driveApi.downloadUrl(node.id), '_blank', 'noopener,noreferrer')
+  }
+
+  const openMediaPreview = useCallback((node: DriveNode) => {
+    const kind = getMediaPreviewKind(node.name)
+    if (!kind) {
+      notifications.show({ color: 'gray', message: '不支持预览该格式' })
+      return
+    }
+    setMediaPreview({ node, kind })
+  }, [])
+
+  const reparseMeta = useCallback(async (node: DriveNode) => {
+    setReparsingMeta(true)
+    try {
+      const updated = await driveApi.reparseNodeMeta(node.id)
+      setRows((prev) => prev.map((x) => (x.id === updated.id ? updated : x)))
+      setPropertiesNode(updated)
+      notifications.show({ color: 'green', message: '元数据已重新解析' })
+    } catch {
+      notifications.show({ color: 'red', message: '重新解析失败，请检查 ffprobe 或文件内容' })
+    } finally {
+      setReparsingMeta(false)
+    }
+  }, [])
+
+  const handleRowDoubleClick = useCallback(
+    (e: React.MouseEvent, node: DriveNode) => {
+      if (editingNodeId === node.id) return
+      const el = e.target as HTMLElement | null
+      if (el?.closest('button, input, textarea, a[href]')) return
+      if (node.is_folder) {
+        navigateTo(node.id)
+        return
+      }
+      const kind = getMediaPreviewKind(node.name)
+      if (kind) {
+        e.preventDefault()
+        setMediaPreview({ node, kind })
+        return
+      }
+      window.open(driveApi.downloadUrl(node.id), '_blank', 'noopener,noreferrer')
+    },
+    [editingNodeId, navigateTo],
+  )
+
+  const newFolder = () => {
+    if (!folderId) return
+    void (async () => {
+      try {
+        const name = suggestNewFolderName()
+        const created = await driveApi.createFolder(folderId, name)
+        notifications.show({ color: 'green', message: '已创建' })
+        await refresh()
+        setEditingNodeId(created.id)
+        setEditDraft(created.name)
+      } catch {
+        /* noop */
+      }
+    })()
+  }
+
+  const onPickFiles = useCallback((files: FileList | null) => {
+    if (!files?.length || !folderId) return
+    void (async () => {
+      const list = Array.from(files)
+      const total = list.length
+      let done = 0
+      let failed = 0
+      setUploading(true)
+      setUploadProgress({ done: 0, total })
+      notifications.show({
+        id: 'upload-progress',
+        color: 'blue',
+        loading: true,
+        autoClose: false,
+        message: `正在上传（0/${total}）`,
+      })
+
+      try {
+        for (const f of list) {
+          try {
+            await driveApi.uploadFile(folderId, f)
+          } catch {
+            failed += 1
+          }
+          done += 1
+          setUploadProgress({ done, total })
+          notifications.update({
+            id: 'upload-progress',
+            color: 'blue',
+            loading: true,
+            autoClose: false,
+            message: `正在上传（${done}/${total}）`,
+          })
+        }
+
+        notifications.update({
+          id: 'upload-progress',
+          color: failed > 0 ? 'yellow' : 'green',
+          loading: false,
+          autoClose: 3500,
+          message:
+            failed > 0
+              ? `上传完成，成功 ${total - failed} 个，失败 ${failed} 个`
+              : `上传完成，共 ${total} 个文件`,
+        })
+
+        await refresh()
+      } finally {
+        setUploading(false)
+        setUploadProgress({ done: 0, total: 0 })
+      }
+    })()
+  }, [folderId, refresh])
+
+  useEffect(() => {
+    const hasFiles = (dt: DataTransfer | null | undefined) =>
+      !!dt && Array.from(dt.types).includes('Files')
+
+    const onWindowDragEnter = (e: DragEvent) => {
+      if (!hasFiles(e.dataTransfer)) return
+      e.preventDefault()
+      fileDragDepthRef.current += 1
+      setIsFileDragActive(true)
+    }
+
+    const onWindowDragOver = (e: DragEvent) => {
+      if (!hasFiles(e.dataTransfer)) return
+      e.preventDefault()
+    }
+
+    const onWindowDragLeave = (e: DragEvent) => {
+      if (!hasFiles(e.dataTransfer)) return
+      e.preventDefault()
+      fileDragDepthRef.current = Math.max(0, fileDragDepthRef.current - 1)
+      if (fileDragDepthRef.current === 0) setIsFileDragActive(false)
+    }
+
+    const onWindowDrop = (e: DragEvent) => {
+      e.preventDefault()
+      fileDragDepthRef.current = 0
+      setIsFileDragActive(false)
+      if (!hasFiles(e.dataTransfer)) return
+      onPickFiles(e.dataTransfer?.files ?? null)
+    }
+
+    window.addEventListener('dragenter', onWindowDragEnter)
+    window.addEventListener('dragover', onWindowDragOver)
+    window.addEventListener('dragleave', onWindowDragLeave)
+    window.addEventListener('drop', onWindowDrop)
+    return () => {
+      window.removeEventListener('dragenter', onWindowDragEnter)
+      window.removeEventListener('dragover', onWindowDragOver)
+      window.removeEventListener('dragleave', onWindowDragLeave)
+      window.removeEventListener('drop', onWindowDrop)
+    }
+  }, [onPickFiles])
+
+  useEffect(() => {
+    if (!contextMenu.opened) return
+    const close = () =>
+      setContextMenu((prev) => ({ ...prev, opened: false, targetId: null }))
+    window.addEventListener('click', close)
+    window.addEventListener('scroll', close, true)
+    return () => {
+      window.removeEventListener('click', close)
+      window.removeEventListener('scroll', close, true)
+    }
+  }, [contextMenu.opened])
+
+  const canBack = nav !== null && nav.index > 0
+  const canForward = nav !== null && nav.index < nav.stack.length - 1
+  const canUp = rootId !== null && folderId !== null && folderId !== rootId
+
+  if (!rootId || !nav || !folderId) {
+    return (
+      <AppShell padding="md">
+        <AppShell.Main>
+          <Text>加载中…</Text>
+        </AppShell.Main>
+      </AppShell>
+    )
+  }
+
+  return (
+    <AppShell
+      header={{ height: 56 }}
+      padding="md"
+      styles={{
+        main: {
+          flex: 1,
+          display: 'flex',
+          flexDirection: 'column',
+          minWidth: 0,
+          minHeight: 0,
+        },
+      }}
+    >
+      <AppShell.Header px="md" withBorder>
+        <Group h="100%" justify="space-between">
+          <Title order={4}>ZeroDrive</Title>
+          <Button
+            variant="subtle"
+            size="xs"
+            onClick={async () => {
+              await driveApi.logout()
+              window.location.href = '/login'
+            }}
+          >
+            退出
+          </Button>
+        </Group>
+      </AppShell.Header>
+      <AppShell.Main>
+        {isFileDragActive && (
+          <Box
+            style={{
+              position: 'fixed',
+              inset: 0,
+              zIndex: 400,
+              backgroundColor: 'rgba(20, 40, 90, 0.35)',
+              backdropFilter: 'blur(2px)',
+              pointerEvents: 'none',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <Paper
+              shadow="md"
+              radius="md"
+              p="lg"
+              style={{
+                border: '2px dashed var(--mantine-color-blue-5)',
+                backgroundColor: 'rgba(255, 255, 255, 0.95)',
+              }}
+            >
+              <Group gap="xs" align="center">
+                <IconUpload size={20} />
+                <Text fw={600}>松开以上传到当前文件夹</Text>
+              </Group>
+            </Paper>
+          </Box>
+        )}
+        <DndContext
+          sensors={sensors}
+          collisionDetection={collisionDetection}
+          onDragStart={handleDragStart}
+          onDragCancel={handleDragCancel}
+          onDragEnd={(e) => void handleDragEnd(e)}
+        >
+          <Box
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              flex: '1 1 0%',
+              minHeight: 0,
+              minWidth: 0,
+            }}
+            onPointerDownCapture={clearSelectionIfOutsideRow}
+          >
+          <DriveToolbar
+            canBack={canBack}
+            canForward={canForward}
+            canUp={canUp}
+            onBack={goBack}
+            onForward={goForward}
+            onUp={goUp}
+            onRefresh={() => void refresh()}
+            crumbs={crumbs}
+            rootId={rootId}
+            onBreadcrumbSegment={onBreadcrumbSegment}
+            crumbLabel={crumbLabel}
+            draggingNodeId={draggingNodeId}
+          />
+
+        <Box
+          style={{
+            display: 'flex',
+            flex: '1 1 0%',
+            alignItems: 'flex-start',
+            gap: 'var(--mantine-spacing-md)',
+            width: '100%',
+            minWidth: 0,
+            minHeight: 0,
+          }}
+        >
+          <DriveSidebar
+            flatFolders={flatFolders}
+            rootId={rootId}
+            folderId={folderId}
+            onTreeSelect={(id) => void onTreeSelect(id)}
+            draggingNodeId={draggingNodeId}
+          />
+          <DriveContentPane
+            uploading={uploading}
+            uploadProgress={uploadProgress}
+            onNewFolder={newFolder}
+            onPickFiles={onPickFiles}
+            tableBody={rows.map((n) => (
+              <NodeTableRow
+                key={n.id}
+                node={n}
+                onEnterFolder={enterFolder}
+                onDownload={doDownload}
+                onRename={startRename}
+                onDelete={doDelete}
+                isNameEditing={editingNodeId === n.id}
+                nameEditValue={editDraft}
+                onNameEditChange={setEditDraft}
+                onNameEditCommit={() => void commitNameEdit()}
+                onNameEditBlurCommit={commitNameEditFromBlur}
+                onNameEditCancel={cancelNameEdit}
+                nameInputRef={nameInputRef}
+                selected={selectedSet.has(n.id)}
+                onRowClick={handleRowClick}
+                onRowContextMenu={handleRowContextMenu}
+                onRowDoubleClick={handleRowDoubleClick}
+                openMediaPreview={openMediaPreview}
+                onProperties={setPropertiesNode}
+              />
+            ))}
+            contextMenu={
+              <DriveContextMenu
+                opened={contextMenu.opened}
+                x={contextMenu.x}
+                y={contextMenu.y}
+                selectedCount={selectedIds.length}
+                targetNode={contextMenuTargetNode}
+                previewTarget={contextMenuPreviewTarget}
+                onOpenChange={(opened) =>
+                  setContextMenu((prev) => ({
+                    ...prev,
+                    opened,
+                    targetId: opened ? prev.targetId : null,
+                  }))
+                }
+                onPreview={(p) => {
+                  closeContextMenu()
+                  setMediaPreview(p)
+                }}
+                onDownload={(node) => {
+                  closeContextMenu()
+                  doDownload(node)
+                }}
+                onCopyLink={(node) => {
+                  closeContextMenu()
+                  void (async () => {
+                    const ok = await copyTextToClipboard(driveApi.absoluteDownloadUrl(node.id))
+                    notifications.show({
+                      message: ok ? '下载链接已复制' : '复制失败，请手动复制',
+                      color: ok ? 'green' : 'red',
+                    })
+                  })()
+                }}
+                onCopyName={(node) => {
+                  closeContextMenu()
+                  void (async () => {
+                    const ok = await copyTextToClipboard(node.name)
+                    notifications.show({
+                      message: ok ? '文件名已复制' : '复制失败，请手动复制',
+                      color: ok ? 'green' : 'red',
+                    })
+                  })()
+                }}
+                onRename={(node) => {
+                  closeContextMenu()
+                  window.setTimeout(() => startRename(node), 0)
+                }}
+                onProperties={(node) => {
+                  closeContextMenu()
+                  setPropertiesNode(node)
+                }}
+                onDelete={(node) => {
+                  closeContextMenu()
+                  doDelete(node)
+                }}
+                onBatchDelete={() => {
+                  closeContextMenu()
+                  batchDelete()
+                }}
+              />
+            }
+          />
+        </Box>
+          </Box>
+        </DndContext>
+        <MediaPreviewModal preview={mediaPreview} onClose={() => setMediaPreview(null)} />
+        <NodePropertiesModal
+          node={propertiesNode}
+          reparsing={reparsingMeta}
+          onReparse={(node) => void reparseMeta(node)}
+          onClose={() => setPropertiesNode(null)}
+        />
+      </AppShell.Main>
+    </AppShell>
+  )
+}
