@@ -42,6 +42,10 @@ export function downloadUrl(nodeId: string): string {
   return `/api/nodes/${nodeId}/download`
 }
 
+export function thumbnailUrl(nodeId: string, size = 200): string {
+  return `/api/nodes/${nodeId}/thumbnail?size=${size}`
+}
+
 /** 浏览器可复制的完整 URL（公开下载，无需登录；请当作「谁拿到谁就能下」的私密链接） */
 export function absoluteDownloadUrl(nodeId: string): string {
   if (typeof window === 'undefined') {

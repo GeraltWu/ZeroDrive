@@ -6,6 +6,7 @@
 cd backend
 cp .env.example .env   # 按需编辑账号、路径、JWT_SECRET
 python scripts/migrate.py   # 执行数据库迁移（幂等，可多次执行）
+conda activate zero_drive
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 

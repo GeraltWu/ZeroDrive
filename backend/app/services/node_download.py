@@ -10,7 +10,7 @@ from starlette.responses import FileResponse, StreamingResponse
 
 from app.core.config import get_settings
 from app.models.storage import Blob, StorageBackend
-from app.services import node_service
+from app.models.node import Node
 from app.services.storage_drivers import get_driver
 
 
@@ -22,7 +22,9 @@ async def build_node_download_response(
     filename: str | None = None,
 ) -> FileResponse | StreamingResponse:
     settings = get_settings()
-    node = await node_service.get_node(session, node_id)
+    node = await session.get(Node, node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail="文件不存在")
     if node.is_folder:
         raise HTTPException(status_code=400, detail="不能下载文件夹")
     display_name = filename or node.name or "download"

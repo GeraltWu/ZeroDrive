@@ -39,8 +39,9 @@ import {
   type DragEndEvent,
 } from '@dnd-kit/core'
 import { CSS } from '@dnd-kit/utilities'
-import { DriveContentPane } from '../components/drive/DriveContentPane'
+import { DriveContentPane, type SortDir, type SortKey, type ViewMode } from '../components/drive/DriveContentPane'
 import { DriveContextMenu } from '../components/drive/DriveContextMenu'
+import { DriveGrid } from '../components/drive/DriveGrid'
 import { DriveSidebar } from '../components/drive/DriveSidebar'
 import { DriveToolbar } from '../components/drive/DriveToolbar'
 import { MediaPreviewModal } from '../components/drive/MediaPreviewModal'
@@ -353,6 +354,9 @@ export function DrivePage() {
   } | null>(null)
   const [propertiesNode, setPropertiesNode] = useState<DriveNode | null>(null)
   const [reparsingMeta, setReparsingMeta] = useState(false)
+  const [viewMode, setViewMode] = useState<ViewMode>('list')
+  const [sortKey, setSortKey] = useState<SortKey>('name')
+  const [sortDir, setSortDir] = useState<SortDir>('asc')
   const nameInputRef = useRef<HTMLInputElement>(null)
   const fileDragDepthRef = useRef(0)
   /** 避免从 Menu 进入编辑时，关闭菜单触发的瞬时 blur 立刻提交并退出编辑 */
@@ -372,6 +376,43 @@ export function DrivePage() {
   )
   const rowsById = useMemo(() => new Map(rows.map((r) => [r.id, r] as const)), [rows])
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds])
+  const sortedRows = useMemo(() => {
+    const sorted = [...rows]
+    sorted.sort((a, b) => {
+      let va: string | number, vb: string | number
+      switch (sortKey) {
+        case 'name':
+          va = (a.name || '').toLowerCase()
+          vb = (b.name || '').toLowerCase()
+          break
+        case 'size':
+          va = a.is_folder ? -1 : a.size
+          vb = b.is_folder ? -1 : b.size
+          break
+        case 'updated_at':
+          va = a.updated_at
+          vb = b.updated_at
+          break
+        default:
+          return 0
+      }
+      if (va < vb) return sortDir === 'asc' ? -1 : 1
+      if (va > vb) return sortDir === 'asc' ? 1 : -1
+      return 0
+    })
+    return sorted
+  }, [rows, sortKey, sortDir])
+  const handleSortChange = useCallback(
+    (key: SortKey) => {
+      if (sortKey === key) {
+        setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+      } else {
+        setSortKey(key)
+        setSortDir('asc')
+      }
+    },
+    [sortKey],
+  )
   const selectedNodes = useMemo(
     () => selectedIds.map((id) => rowsById.get(id)).filter((n): n is DriveNode => !!n),
     [selectedIds, rowsById],
@@ -1109,9 +1150,14 @@ export function DrivePage() {
           <DriveContentPane
             uploading={uploading}
             uploadProgress={uploadProgress}
+            viewMode={viewMode}
+            onViewModeChange={setViewMode}
+            sortKey={sortKey}
+            sortDir={sortDir}
+            onSortChange={handleSortChange}
             onNewFolder={newFolder}
             onPickFiles={onPickFiles}
-            tableBody={rows.map((n) => (
+            tableBody={sortedRows.map((n) => (
               <NodeTableRow
                 key={n.id}
                 node={n}
@@ -1134,6 +1180,18 @@ export function DrivePage() {
                 onProperties={setPropertiesNode}
               />
             ))}
+            gridBody={
+              viewMode !== 'list' ? (
+                <DriveGrid
+                  nodes={sortedRows}
+                  selectedIds={selectedSet}
+                  size={viewMode}
+                  onRowClick={handleRowClick}
+                  onRowContextMenu={handleRowContextMenu}
+                  onRowDoubleClick={handleRowDoubleClick}
+                />
+              ) : null
+            }
             contextMenu={
               <DriveContextMenu
                 opened={contextMenu.opened}

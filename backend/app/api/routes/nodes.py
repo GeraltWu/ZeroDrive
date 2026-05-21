@@ -144,6 +144,47 @@ async def download(node_id: str, request: Request):
         )
 
 
+@router.get("/{node_id}/thumbnail")
+async def thumbnail(node_id: str, size: int = 200):
+    size = max(40, min(800, size))
+    from starlette.responses import Response
+
+    from app.services.thumbnail import thumbnail_from_bytes, thumbnail_from_path
+
+    settings = get_settings()
+    async with AsyncSessionLocal() as session:
+        node = await session.get(Node, node_id)
+        if not node or node.is_folder or not node.blob_id:
+            raise HTTPException(status_code=404, detail="无法生成缩略图")
+        blob = await session.get(Blob, node.blob_id)
+        if not blob:
+            raise HTTPException(status_code=404, detail="无法生成缩略图")
+        backend = await session.get(StorageBackend, blob.storage_backend_id)
+        if not backend:
+            raise HTTPException(status_code=404, detail="无法生成缩略图")
+        driver = get_driver(backend, settings)
+
+        try:
+            if driver.is_filesystem():
+                path = driver.filesystem_path(blob.object_key)
+                thumb_bytes = await thumbnail_from_path(path, size)
+            else:
+                body_stream, _ = await asyncio.to_thread(
+                    driver.get_object_stream, blob.bucket, blob.object_key, None
+                )
+                try:
+                    data = body_stream.read()
+                finally:
+                    close_fn = getattr(body_stream, 'close', None)
+                    if callable(close_fn):
+                        await asyncio.to_thread(close_fn)
+                thumb_bytes = await thumbnail_from_bytes(data, size)
+        except Exception:
+            raise HTTPException(status_code=415, detail="不支持生成该文件的缩略图")
+
+    return Response(content=thumb_bytes, media_type="image/jpeg")
+
+
 @router.patch("/{node_id}/rename")
 async def rename(
     node_id: str,

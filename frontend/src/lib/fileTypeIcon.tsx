@@ -65,7 +65,7 @@ const VIDEO = new Set([
   'ts',
 ])
 
-const IMAGE = new Set([
+export const IMAGE = new Set([
   'jpg',
   'jpeg',
   'png',

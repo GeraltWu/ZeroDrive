@@ -8,7 +8,7 @@ services:
       - DATA_ROOT=/app/data/files
       - SQLITE_PATH=/app/data/zerodrive.db
       - ADMIN_USERNAME=admin
-      - ADMIN_PASSWORD=${ADMIN_PASSWORD:123}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-123}
       - JWT_SECRET=${JWT_SECRET:-change-me-to-a-long-random-secret}
       - JWT_ALGORITHM=HS256
       - JWT_EXPIRE_MINUTES=525,600
