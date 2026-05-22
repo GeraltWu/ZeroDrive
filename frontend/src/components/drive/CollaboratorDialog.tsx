@@ -10,7 +10,6 @@ import {
   Text,
   TextInput,
 } from '@mantine/core'
-import { notifications } from '@mantine/notifications'
 import { IconTrash } from '@tabler/icons-react'
 import * as driveApi from '../../lib/driveApi'
 import type { Collaborator } from '../../types/node'

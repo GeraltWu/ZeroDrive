@@ -17,7 +17,7 @@ import app.models.storage  # noqa: F401 — 注册 Blob / StorageBackend 到 met
 import app.models.collaborator  # noqa: F401 — 注册 FolderCollaborator 到 metadata
 from app.schemas.response import err, ok
 from app.services.bot_path import PathNotFoundError, PathValidationError
-from app.services.bot_service import NoImagesError
+from app.services.bot_service import NoFilesError
 from app.services.node_service import (
     ConflictError,
     NodeNotFoundError,
@@ -106,11 +106,11 @@ async def path_not_found_handler(_, exc: PathNotFoundError):
     )
 
 
-@app.exception_handler(NoImagesError)
-async def no_images_handler(_, _exc: NoImagesError):
+@app.exception_handler(NoFilesError)
+async def no_files_handler(_, _exc: NoFilesError):
     return JSONResponse(
         status_code=404,
-        content=err(40403, "该文件夹内没有符合条件的图片").model_dump(mode="json"),
+        content=err(40403, "该文件夹内没有符合条件的文件").model_dump(mode="json"),
     )
 
 

@@ -17,17 +17,17 @@ export function MediaPreviewModal({
   onClose: () => void
 }) {
   const [cached, setCached] = useState<PreviewData | null>(null)
-  const timerRef = useRef<ReturnType<typeof setTimeout>>()
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     if (preview) {
-      clearTimeout(timerRef.current)
+      clearTimeout(timerRef.current ?? undefined)
       setCached(preview)
     } else if (cached) {
       // 等退出动画结束后再清空，避免闪现空窗口
       timerRef.current = setTimeout(() => setCached(null), 200)
     }
-    return () => clearTimeout(timerRef.current)
+    return () => clearTimeout(timerRef.current ?? undefined)
   }, [preview])
 
   const active = cached

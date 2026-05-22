@@ -6,15 +6,13 @@ from pathlib import PurePosixPath
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from fastapi import HTTPException
-
 from app.models.node import Node
 from app.schemas.node import NodeOut
-from app.services.bot_path import PathNotFoundError, normalize_path
+from app.services.bot_path import PathNotFoundError, _is_filename, normalize_path
 from app.services.node_service import ConflictError, NodeNotFoundError, _check_owner, get_user_root, to_out
 
 
-class NoImagesError(Exception):
+class NoFilesError(Exception):
     pass
 
 
@@ -29,7 +27,7 @@ def _parse_extensions(extensions: str | None) -> set[str]:
     return out
 
 
-def _matches_image(node: Node, mime_prefix: str, extensions: set[str]) -> bool:
+def _matches_file(node: Node, mime_prefix: str, extensions: set[str]) -> bool:
     if node.is_folder or not node.blob_id:
         return False
     mime = (node.mime_type or "").lower()
@@ -42,11 +40,12 @@ def _matches_image(node: Node, mime_prefix: str, extensions: set[str]) -> bool:
     return False
 
 
-async def resolve_folder_by_path(
+async def resolve_path_to_node(
     session: AsyncSession,
     path: str,
     user_id: str,
 ) -> tuple[Node, str]:
+    """解析 path 到节点（文件或文件夹）。最后一段有后缀则匹配文件，否则匹配文件夹。"""
     segments = normalize_path(path)
     root = await get_user_root(session, user_id)
     if not segments:
@@ -54,7 +53,25 @@ async def resolve_folder_by_path(
 
     current_id = root.id
     resolved_parts: list[str] = []
-    for segment in segments:
+
+    for i, segment in enumerate(segments):
+        is_last = i == len(segments) - 1
+
+        if is_last and _is_filename(segment):
+            res = await session.execute(
+                select(Node).where(
+                    Node.parent_id == current_id,
+                    Node.name == segment,
+                    Node.is_folder.is_(False),
+                    Node.owner_id == user_id,
+                )
+            )
+            file = res.scalar_one_or_none()
+            if file:
+                resolved_parts.append(segment)
+                return file, "/" + "/".join(resolved_parts)
+            raise PathNotFoundError(segment, "/" + "/".join(resolved_parts))
+
         res = await session.execute(
             select(Node).where(
                 Node.parent_id == current_id,
@@ -65,25 +82,24 @@ async def resolve_folder_by_path(
         )
         matches = list(res.scalars().all())
         if not matches:
-            raise PathNotFoundError(segment, "/".join(resolved_parts))
+            raise PathNotFoundError(segment, "/" + "/".join(resolved_parts))
         if len(matches) > 1:
             raise ConflictError(f"路径段「{segment}」存在多个同名文件夹")
-        folder = matches[0]
-        current_id = folder.id
+        current_id = matches[0].id
         resolved_parts.append(segment)
 
     folder = await session.get(Node, current_id)
     if not folder or not folder.is_folder:
-        raise PathNotFoundError(segments[-1], "/".join(resolved_parts[:-1]))
-    return folder, "/".join(resolved_parts)
+        raise PathNotFoundError(segments[-1], "/" + "/".join(resolved_parts[:-1]))
+    return folder, "/" + "/".join(resolved_parts)
 
 
-async def pick_random_image_in_folder(
+async def pick_random_file_in_folder(
     session: AsyncSession,
     folder_id: str,
     user_id: str,
     *,
-    mime_prefix: str = "image/",
+    mime_prefix: str,
     extensions: str | None = None,
 ) -> NodeOut:
     folder = await session.get(Node, folder_id)
@@ -102,8 +118,8 @@ async def pick_random_image_in_folder(
     candidates = [
         to_out(n)
         for n in res.scalars().all()
-        if _matches_image(n, mime_prefix, ext_set)
+        if _matches_file(n, mime_prefix, ext_set)
     ]
     if not candidates:
-        raise NoImagesError()
+        raise NoFilesError()
     return secrets.choice(candidates)

@@ -25,7 +25,6 @@ import {
   IconPlayerPlay,
   IconTrash,
   IconUpload,
-  IconUsers,
 } from '@tabler/icons-react'
 import {
   type CollisionDetection,
@@ -366,7 +365,6 @@ export function DrivePage() {
   const [viewMode, setViewMode] = useState<ViewMode>('list')
   const [sortKey, setSortKey] = useState<SortKey>('name')
   const [sortDir, setSortDir] = useState<SortDir>('asc')
-  const [currentUsername, setCurrentUsername] = useState<string>('')
   const [collabDialog, setCollabDialog] = useState<{
     folderId: string
     folderName: string
@@ -521,8 +519,6 @@ export function DrivePage() {
       const id = await driveApi.fetchRootId()
       setRootId(id)
       setNav({ stack: [id], index: 0 })
-      const u = await driveApi.me()
-      setCurrentUsername(u.username)
     })()
   }, [])
 

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Box, Divider, Group, NavLink, Paper, Text } from '@mantine/core'
-import { IconFolder, IconUsers } from '@tabler/icons-react'
+import { Divider, NavLink, Paper, Text } from '@mantine/core'
+import { IconFolder } from '@tabler/icons-react'
 import { FolderTree } from './FolderTree'
 import * as driveApi from '../../lib/driveApi'
 import type { FolderTreeItem, SharedFolder } from '../../types/node'

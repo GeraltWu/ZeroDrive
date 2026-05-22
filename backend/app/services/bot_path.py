@@ -22,7 +22,6 @@ def normalize_path(path: str) -> list[str]:
         raise PathValidationError("path 不能为空")
     if not raw.startswith("/"):
         raise PathValidationError("path 必须以 / 开头，如 / 或 /图片/奶龙")
-    # 根目录
     if raw == "/":
         return []
     if "\\" in path or ".." in raw:
@@ -42,3 +41,12 @@ def normalize_path(path: str) -> list[str]:
     if not segments:
         raise PathValidationError("path 不能为空")
     return segments
+
+
+def _is_filename(segment: str) -> bool:
+    """通过是否有后缀判断是否为文件：包含 . 且后缀长度 1~10。"""
+    i = segment.rfind(".")
+    if i <= 0 or i >= len(segment) - 1:
+        return False
+    suffix = segment[i + 1:]
+    return 1 <= len(suffix) <= 10 and suffix.isalnum()

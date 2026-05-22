@@ -13,10 +13,11 @@ class BotResolvePathOut(BaseModel):
     resolved_path: str
 
 
-class BotRandomImageOut(BaseModel):
+class BotRandomFileOut(BaseModel):
     node_id: str
     name: str
     mime_type: str | None = None
     size: int
     folder: BotFolderRef
     download_url: str
+    picked: str = Field(default="random", description="random 或 exact")

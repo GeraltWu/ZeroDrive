@@ -76,8 +76,9 @@ python scripts/test_minio_connection.py
 
 文件路径统一使用绝对路径，`/` 为根目录：
 
-- `GET /api/bot/random-image?path=/图片/奶龙`
 - `GET /api/bot/resolve-path?path=/图片/奶龙`
+- `GET /api/bot/random-file?path=/语音/早安&mime_prefix=audio/`
+- `GET /api/bot/random-file?path=/图片/奶龙.png&mime_prefix=image/`
 - `GET /api/bot/files/{node_id}/content?签名参数`
 
 ## 下载接口说明

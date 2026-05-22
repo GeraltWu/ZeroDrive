@@ -13,11 +13,11 @@ from app.core.config import get_settings
 from app.core.security import create_download_signature, verify_download_signature
 from app.db.session import get_db
 from app.models.node import Node
-from app.schemas.bot import BotFolderRef, BotRandomImageOut, BotResolvePathOut
+from app.schemas.bot import BotFolderRef, BotRandomFileOut, BotResolvePathOut
 from app.schemas.response import ok
 from app.services import bot_service
 from app.services.bot_path import PathNotFoundError, PathValidationError
-from app.services.bot_service import NoImagesError
+from app.services.bot_service import NoFilesError
 from app.services.node_download import build_node_download_response
 from app.services.node_service import _check_owner
 
@@ -39,42 +39,52 @@ def _build_download_url(request: Request, node_id: str) -> str:
 async def resolve_path(
     db: Db,
     user: CurrentUser,
-    path: str = Query(..., min_length=1, description="文件夹绝对路径，/ 为根目录，/图片/奶龙"),
+    path: str = Query(..., min_length=1, description="文件夹绝对路径，/ 为根目录，/语音/早安"),
 ) -> dict:
-    folder, resolved = await bot_service.resolve_folder_by_path(db, path, user.id)
+    node, resolved = await bot_service.resolve_path_to_node(db, path, user.id)
     payload = BotResolvePathOut(
-        id=folder.id,
-        name=folder.name,
-        parent_id=folder.parent_id,
+        id=node.id,
+        name=node.name,
+        parent_id=node.parent_id,
         resolved_path=resolved,
     )
     return ok(payload.model_dump(mode="json")).model_dump()
 
 
-@router.get("/random-image")
-async def random_image(
+@router.get("/random-file")
+async def random_file(
     request: Request,
     db: Db,
     user: CurrentUser,
-    path: str = Query(..., min_length=1, description="文件夹绝对路径，/ 为根目录，/图片/奶龙"),
-    mime_prefix: str = Query("image/", description="mime_type 前缀匹配"),
-    extensions: str | None = Query(None, description="扩展名白名单，逗号分隔，如 jpg,png,gif"),
+    path: str = Query(..., min_length=1, description="文件夹或文件路径，/ 为根目录，/语音/早安 或 /语音/早安.mp3"),
+    mime_prefix: str = Query(..., min_length=1, description="mime_type 前缀匹配，如 image/ 或 audio/"),
+    extensions: str | None = Query(None, description="扩展名白名单，逗号分隔，如 mp3,wav,ogg"),
 ) -> dict:
-    folder, resolved = await bot_service.resolve_folder_by_path(db, path, user.id)
-    picked = await bot_service.pick_random_image_in_folder(
-        db,
-        folder.id,
-        user.id,
-        mime_prefix=mime_prefix,
-        extensions=extensions,
-    )
-    payload = BotRandomImageOut(
-        node_id=picked.id,
-        name=picked.name,
-        mime_type=picked.mime_type,
-        size=picked.size,
-        folder=BotFolderRef(id=folder.id, resolved_path=resolved),
-        download_url=_build_download_url(request, picked.id),
+    node, resolved = await bot_service.resolve_path_to_node(db, path, user.id)
+
+    if node.is_folder:
+        picked_node = await bot_service.pick_random_file_in_folder(
+            db,
+            node.id,
+            user.id,
+            mime_prefix=mime_prefix,
+            extensions=extensions,
+        )
+        picked = "random"
+        folder_id = node.id
+    else:
+        picked_node = bot_service.to_out(node)
+        picked = "exact"
+        folder_id = node.parent_id or node.id
+
+    payload = BotRandomFileOut(
+        node_id=picked_node.id,
+        name=picked_node.name,
+        mime_type=picked_node.mime_type,
+        size=picked_node.size,
+        folder=BotFolderRef(id=folder_id, resolved_path=resolved),
+        download_url=_build_download_url(request, picked_node.id),
+        picked=picked,
     )
     return ok(payload.model_dump(mode="json")).model_dump()
 
