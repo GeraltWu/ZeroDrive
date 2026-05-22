@@ -1,30 +1,52 @@
+import { useEffect, useRef, useState } from 'react'
 import { Modal } from '@mantine/core'
 import * as driveApi from '../../lib/driveApi'
 import type { DriveNode } from '../../types/node'
 import type { MediaPreviewKind } from '../../lib/mediaPreview'
 
+interface PreviewData {
+  node: DriveNode
+  kind: MediaPreviewKind
+}
+
 export function MediaPreviewModal({
   preview,
   onClose,
 }: {
-  preview: { node: DriveNode; kind: MediaPreviewKind } | null
+  preview: PreviewData | null
   onClose: () => void
 }) {
+  const [cached, setCached] = useState<PreviewData | null>(null)
+  const timerRef = useRef<ReturnType<typeof setTimeout>>()
+
+  useEffect(() => {
+    if (preview) {
+      clearTimeout(timerRef.current)
+      setCached(preview)
+    } else if (cached) {
+      // 等退出动画结束后再清空，避免闪现空窗口
+      timerRef.current = setTimeout(() => setCached(null), 200)
+    }
+    return () => clearTimeout(timerRef.current)
+  }, [preview])
+
+  const active = cached
+
   return (
     <Modal
       opened={preview !== null}
       onClose={onClose}
-      title={preview?.node.name ?? '预览'}
+      title={active?.node.name ?? ''}
       size="xl"
       centered
       zIndex={500}
     >
-      {preview?.kind === 'video' && (
+      {active?.kind === 'video' && (
         <video
-          key={preview.node.id}
+          key={active.node.id}
           controls
           playsInline
-          src={driveApi.downloadUrl(preview.node.id)}
+          src={driveApi.downloadUrl(active.node.id)}
           style={{
             width: '100%',
             maxHeight: '72vh',
@@ -32,11 +54,11 @@ export function MediaPreviewModal({
           }}
         />
       )}
-      {preview?.kind === 'image' && (
+      {active?.kind === 'image' && (
         <img
-          key={preview.node.id}
-          src={driveApi.downloadUrl(preview.node.id)}
-          alt={preview.node.name}
+          key={active.node.id}
+          src={driveApi.downloadUrl(active.node.id)}
+          alt={active.node.name}
           style={{
             width: '100%',
             maxHeight: '72vh',
@@ -44,11 +66,11 @@ export function MediaPreviewModal({
           }}
         />
       )}
-      {preview?.kind === 'audio' && (
+      {active?.kind === 'audio' && (
         <audio
-          key={preview.node.id}
+          key={active.node.id}
           controls
-          src={driveApi.downloadUrl(preview.node.id)}
+          src={driveApi.downloadUrl(active.node.id)}
           style={{ width: '100%' }}
         />
       )}
