@@ -8,16 +8,13 @@ from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.api.routes import auth, bot, nodes
+from app.api.routes import auth, bot, collaborators, nodes
 from app.core.config import get_settings
-from app.db.base import Base
-from app.db.session import AsyncSessionLocal, engine
+from app.db.session import engine
 import app.models.storage  # noqa: F401 — 注册 Blob / StorageBackend 到 metadata
-from app.models.user import User
-from app.core.security import hash_password
+import app.models.collaborator  # noqa: F401 — 注册 FolderCollaborator 到 metadata
 from app.schemas.response import err, ok
 from app.services.bot_path import PathNotFoundError, PathValidationError
 from app.services.bot_service import NoImagesError
@@ -25,8 +22,6 @@ from app.services.node_service import (
     ConflictError,
     NodeNotFoundError,
     NodeValidationError,
-    create_user_root,
-    get_user_root,
 )
 from app.services.storage import ensure_data_root
 
@@ -37,24 +32,6 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     pathlib.Path(settings.sqlite_path).parent.mkdir(parents=True, exist_ok=True)
     ensure_data_root()
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    async with AsyncSessionLocal() as session:
-        admin = (
-            await session.execute(select(User).where(User.username == settings.admin_username))
-        ).scalar_one_or_none()
-        if admin is None:
-            admin = User(
-                username=settings.admin_username,
-                password_hash=hash_password(settings.admin_password),
-            )
-            session.add(admin)
-            await session.commit()
-        try:
-            await get_user_root(session, admin.id)
-        except NodeNotFoundError:
-            await create_user_root(session, admin.id)
-            await session.commit()
     yield
     await engine.dispose()
 
@@ -145,3 +122,4 @@ async def health():
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(bot.router, prefix="/api/bot", tags=["bot"])
 app.include_router(nodes.router, prefix="/api/nodes", tags=["nodes"])
+app.include_router(collaborators.router, prefix="/api/collaborators", tags=["collaborators"])

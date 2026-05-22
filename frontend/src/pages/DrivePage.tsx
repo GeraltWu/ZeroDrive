@@ -25,6 +25,7 @@ import {
   IconPlayerPlay,
   IconTrash,
   IconUpload,
+  IconUsers,
 } from '@tabler/icons-react'
 import {
   type CollisionDetection,
@@ -39,6 +40,7 @@ import {
   type DragEndEvent,
 } from '@dnd-kit/core'
 import { CSS } from '@dnd-kit/utilities'
+import { CollaboratorDialog } from '../components/drive/CollaboratorDialog'
 import { DriveContentPane, type SortDir, type SortKey, type ViewMode } from '../components/drive/DriveContentPane'
 import { DriveContextMenu } from '../components/drive/DriveContextMenu'
 import { DriveGrid } from '../components/drive/DriveGrid'
@@ -97,6 +99,7 @@ function NodeTableRow({
   onRowDoubleClick,
   openMediaPreview,
   onProperties,
+  showOwner,
 }: {
   node: DriveNode
   onEnterFolder: (n: DriveNode) => void
@@ -116,6 +119,7 @@ function NodeTableRow({
   onRowDoubleClick: (e: React.MouseEvent, node: DriveNode) => void
   openMediaPreview: (n: DriveNode) => void
   onProperties: (n: DriveNode) => void
+  showOwner: boolean
 }) {
   const drag = useDraggable({
     id: `item:${node.id}`,
@@ -232,6 +236,11 @@ function NodeTableRow({
                 {node.is_folder ? node.name || '文件夹' : node.name}
               </Text>
             </Group>
+            {showOwner && node.owner_username && (
+              <Text size="xs" c="dimmed" ml={24}>
+                {node.owner_username}
+              </Text>
+            )}
           </Anchor>
         )}
       </Table.Td>
@@ -357,6 +366,12 @@ export function DrivePage() {
   const [viewMode, setViewMode] = useState<ViewMode>('list')
   const [sortKey, setSortKey] = useState<SortKey>('name')
   const [sortDir, setSortDir] = useState<SortDir>('asc')
+  const [currentUsername, setCurrentUsername] = useState<string>('')
+  const [collabDialog, setCollabDialog] = useState<{
+    folderId: string
+    folderName: string
+  } | null>(null)
+  const [sharedFolderIds, setSharedFolderIds] = useState<Set<string>>(new Set())
   const nameInputRef = useRef<HTMLInputElement>(null)
   const fileDragDepthRef = useRef(0)
   /** 避免从 Menu 进入编辑时，关闭菜单触发的瞬时 blur 立刻提交并退出编辑 */
@@ -366,6 +381,8 @@ export function DrivePage() {
     () => (nav && nav.stack.length > 0 ? nav.stack[nav.index]! : null),
     [nav],
   )
+  const isOwnFolder = folderId !== null && !sharedFolderIds.has(folderId)
+  const isSharedFolder = folderId !== null && sharedFolderIds.has(folderId)
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
@@ -454,14 +471,16 @@ export function DrivePage() {
 
   const refresh = useCallback(async () => {
     if (!folderId) return
-    const [list, bc, tree] = await Promise.all([
+    const [list, bc, tree, shared] = await Promise.all([
       driveApi.listChildren(folderId),
       driveApi.fetchBreadcrumb(folderId),
       driveApi.fetchFolderTree(),
+      driveApi.listSharedWithMe(),
     ])
     setRows(list)
     setCrumbs(bc)
     setFlatFolders(tree)
+    setSharedFolderIds(new Set(shared.map((s) => s.folder_id)))
   }, [folderId])
 
   const selectRange = useCallback(
@@ -502,6 +521,8 @@ export function DrivePage() {
       const id = await driveApi.fetchRootId()
       setRootId(id)
       setNav({ stack: [id], index: 0 })
+      const u = await driveApi.me()
+      setCurrentUsername(u.username)
     })()
   }, [])
 
@@ -1157,6 +1178,13 @@ export function DrivePage() {
             onSortChange={handleSortChange}
             onNewFolder={newFolder}
             onPickFiles={onPickFiles}
+            isOwnFolder={isOwnFolder}
+            onManageCollaborators={() =>
+              setCollabDialog({
+                folderId: folderId!,
+                folderName: crumbs.length > 0 ? crumbs[crumbs.length - 1]!.name : '文件夹',
+              })
+            }
             tableBody={sortedRows.map((n) => (
               <NodeTableRow
                 key={n.id}
@@ -1178,6 +1206,7 @@ export function DrivePage() {
                 onRowDoubleClick={handleRowDoubleClick}
                 openMediaPreview={openMediaPreview}
                 onProperties={setPropertiesNode}
+                showOwner={isSharedFolder}
               />
             ))}
             gridBody={
@@ -1258,6 +1287,15 @@ export function DrivePage() {
           </Box>
         </DndContext>
         <MediaPreviewModal preview={mediaPreview} onClose={() => setMediaPreview(null)} />
+        {collabDialog && (
+          <CollaboratorDialog
+            folderId={collabDialog.folderId}
+            folderName={collabDialog.folderName}
+            isOwner={isOwnFolder}
+            opened
+            onClose={() => setCollabDialog(null)}
+          />
+        )}
         <NodePropertiesModal
           node={propertiesNode}
           reparsing={reparsingMeta}

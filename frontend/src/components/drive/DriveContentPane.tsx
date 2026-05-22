@@ -9,6 +9,7 @@ import {
   IconLayoutGrid,
   IconList,
   IconUpload,
+  IconUsers,
 } from '@tabler/icons-react'
 
 export type ViewMode = 'list' | 'small' | 'large'
@@ -83,6 +84,8 @@ export function DriveContentPane({
   onSortChange,
   onNewFolder,
   onPickFiles,
+  isOwnFolder,
+  onManageCollaborators,
   tableBody,
   gridBody,
   contextMenu,
@@ -96,6 +99,8 @@ export function DriveContentPane({
   onSortChange: (key: SortKey) => void
   onNewFolder: () => void
   onPickFiles: (files: FileList | null) => void
+  isOwnFolder: boolean
+  onManageCollaborators: () => void
   tableBody: ReactNode
   gridBody: ReactNode
   contextMenu: ReactNode
@@ -111,6 +116,11 @@ export function DriveContentPane({
             上传
           </Button>
           <input id="file-up" type="file" multiple hidden onChange={(e) => onPickFiles(e.target.files)} />
+          {isOwnFolder && (
+            <Button leftSection={<IconUsers size={18} />} variant="subtle" onClick={onManageCollaborators}>
+              协作
+            </Button>
+          )}
           <Menu shadow="md" width={140}>
             <Menu.Target>
               <ActionIcon variant="subtle" size="lg">

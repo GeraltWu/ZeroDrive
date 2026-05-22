@@ -14,8 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.db.session import AsyncSessionLocal
+from app.models.collaborator import FolderCollaborator
 from app.models.node import Node
 from app.models.storage import Blob, StorageBackend
+from app.models.user import User
 from app.schemas.node import BreadcrumbItem, FolderTreeItem, NodeOut
 from app.services.media_meta import extract_media_meta
 from app.services.storage_drivers import get_driver
@@ -36,8 +38,45 @@ class NodeValidationError(Exception):
     pass
 
 
+ROLE_LEVEL = {"viewer": 0, "editor": 1, "admin": 2}
+
+
+async def _get_collaborator_role(
+    session: AsyncSession, node_id: str, user_id: str
+) -> str | None:
+    cur_id: str | None = node_id
+    while cur_id:
+        collab = await session.scalar(
+            select(FolderCollaborator).where(
+                FolderCollaborator.folder_id == cur_id,
+                FolderCollaborator.user_id == user_id,
+            )
+        )
+        if collab:
+            return collab.role
+        n = await session.get(Node, cur_id)
+        if not n:
+            break
+        cur_id = n.parent_id
+    return None
+
+
+async def _check_access(
+    session: AsyncSession, node: Node, user_id: str, min_role: str = "viewer"
+) -> None:
+    if node.owner_id == user_id:
+        return
+    if node.owner_id is None:
+        return
+    role = await _get_collaborator_role(session, node.id, user_id)
+    if not role:
+        raise HTTPException(status_code=403, detail="无权访问")
+    if ROLE_LEVEL.get(role, -1) < ROLE_LEVEL.get(min_role, 0):
+        raise HTTPException(status_code=403, detail="权限不足")
+
+
 def _check_owner(node: Node, user_id: str) -> None:
-    """所有权校验 — 后续扩展共享时在此加 shares 表查询。"""
+    """同步所有权校验，仅用于不需要协作检查的简单场景。"""
     if node.owner_id is None:
         return
     if node.owner_id != user_id:
@@ -70,11 +109,13 @@ async def get_user_root(session: AsyncSession, user_id: str) -> Node:
     return root
 
 
-async def _get_or_404(session: AsyncSession, node_id: str, user_id: str) -> Node:
+async def _get_or_404(
+    session: AsyncSession, node_id: str, user_id: str, min_role: str = "viewer"
+) -> Node:
     n = await session.get(Node, node_id)
     if not n:
         raise NodeNotFoundError(node_id)
-    _check_owner(n, user_id)
+    await _check_access(session, n, user_id, min_role)
     return n
 
 
@@ -86,13 +127,11 @@ async def _same_name_exists(
     session: AsyncSession,
     parent_id: str | None,
     name: str,
-    owner_id: str,
     exclude_id: str | None = None,
 ) -> bool:
     q = select(Node).where(
         Node.parent_id == parent_id,
         Node.name == name,
-        Node.owner_id == owner_id,
     )
     if exclude_id:
         q = q.where(Node.id != exclude_id)
@@ -100,20 +139,50 @@ async def _same_name_exists(
     return res.scalar_one_or_none() is not None
 
 
-def to_out(n: Node) -> NodeOut:
-    return NodeOut.model_validate(n)
+def to_out(n: Node, owner_username: str | None = None) -> NodeOut:
+    out = NodeOut.model_validate(n)
+    out.owner_username = owner_username
+    return out
+
+
+async def _bulk_usernames(session: AsyncSession, nodes: list[Node]) -> dict[str, str]:
+    user_ids = {n.owner_id for n in nodes if n.owner_id}
+    if not user_ids:
+        return {}
+    rows = await session.execute(
+        select(User.id, User.username).where(User.id.in_(user_ids))
+    )
+    return {row.id: row.username for row in rows.all()}
 
 
 async def list_all_folders(session: AsyncSession, user_id: str) -> list[FolderTreeItem]:
-    res = await session.execute(
+    own = await session.execute(
         select(Node.id, Node.parent_id, Node.name)
         .where(Node.is_folder.is_(True), Node.owner_id == user_id)
-        .order_by(Node.name.asc())
     )
-    return [
-        FolderTreeItem(id=r[0], parent_id=r[1], name=r[2] or "")
-        for r in res.all()
-    ]
+    shared = await session.execute(
+        select(Node.id, Node.parent_id, Node.name, FolderCollaborator.folder_id)
+        .select_from(Node)
+        .join(FolderCollaborator, FolderCollaborator.folder_id == Node.id)
+        .where(
+            Node.is_folder.is_(True),
+            FolderCollaborator.user_id == user_id,
+        )
+    )
+    seen: set[str] = set()
+    items: list[FolderTreeItem] = []
+    for row in own.all():
+        fid, pid, name = row
+        if fid not in seen:
+            seen.add(fid)
+            items.append(FolderTreeItem(id=fid, parent_id=pid, name=name or ""))
+    for row in shared.all():
+        fid, pid, name, _ = row
+        if fid not in seen:
+            seen.add(fid)
+            items.append(FolderTreeItem(id=fid, parent_id=pid, name=name or ""))
+    items.sort(key=lambda x: (x.name or "").lower())
+    return items
 
 
 async def list_children(session: AsyncSession, parent_id: str, user_id: str) -> list[NodeOut]:
@@ -122,10 +191,12 @@ async def list_children(session: AsyncSession, parent_id: str, user_id: str) -> 
         raise NodeValidationError("parent must be a folder")
     res = await session.execute(
         select(Node)
-        .where(Node.parent_id == parent_id, Node.owner_id == user_id)
+        .where(Node.parent_id == parent_id)
         .order_by(Node.is_folder.desc(), Node.name.asc())
     )
-    return [to_out(n) for n in res.scalars().all()]
+    nodes = list(res.scalars().all())
+    usernames = await _bulk_usernames(session, nodes)
+    return [to_out(n, usernames.get(n.owner_id or "")) for n in nodes]
 
 
 async def ancestors(
@@ -148,10 +219,10 @@ async def ancestors(
 
 
 async def create_folder(session: AsyncSession, parent_id: str, name: str, user_id: str) -> NodeOut:
-    parent = await _get_or_404(session, parent_id, user_id)
+    parent = await _get_or_404(session, parent_id, user_id, min_role="editor")
     if not parent.is_folder:
         raise NodeValidationError("parent must be a folder")
-    if await _same_name_exists(session, parent_id, name, user_id):
+    if await _same_name_exists(session, parent_id, name):
         raise ConflictError("name already exists")
     node = Node(
         id=str(uuid.uuid4()),
@@ -213,12 +284,12 @@ async def save_upload(
     upload: UploadFile,
     user_id: str,
 ) -> NodeOut:
-    parent = await _get_or_404(session, parent_id, user_id)
+    parent = await _get_or_404(session, parent_id, user_id, min_role="editor")
     if not parent.is_folder:
         raise NodeValidationError("parent must be a folder")
     raw_name = upload.filename or "unnamed"
     name = os.path.basename(raw_name).strip() or "unnamed"
-    if await _same_name_exists(session, parent_id, name, user_id):
+    if await _same_name_exists(session, parent_id, name):
         raise ConflictError("name already exists")
 
     backend = (
@@ -270,7 +341,7 @@ async def save_upload(
 
 
 async def reparse_meta(session: AsyncSession, node_id: str, user_id: str) -> NodeOut:
-    node = await _get_or_404(session, node_id, user_id)
+    node = await _get_or_404(session, node_id, user_id, min_role="editor")
     if node.is_folder:
         raise NodeValidationError("folder has no media metadata")
 
@@ -316,11 +387,11 @@ async def reparse_meta(session: AsyncSession, node_id: str, user_id: str) -> Nod
 
 
 async def rename_node(session: AsyncSession, node_id: str, new_name: str, user_id: str) -> NodeOut:
-    node = await _get_or_404(session, node_id, user_id)
+    node = await _get_or_404(session, node_id, user_id, min_role="editor")
     if node.parent_id is None:
         raise NodeValidationError("cannot rename root")
     name = new_name.strip()
-    if await _same_name_exists(session, node.parent_id, name, user_id, exclude_id=node_id):
+    if await _same_name_exists(session, node.parent_id, name, exclude_id=node_id):
         raise ConflictError("name already exists")
     node.name = name
     node.updated_at = datetime.now(timezone.utc)
@@ -341,17 +412,17 @@ async def is_under(session: AsyncSession, ancestor_id: str, node_id: str) -> boo
 
 
 async def move_node(session: AsyncSession, node_id: str, new_parent_id: str, user_id: str) -> NodeOut:
-    node = await _get_or_404(session, node_id, user_id)
+    node = await _get_or_404(session, node_id, user_id, min_role="editor")
     if node.parent_id is None:
         raise NodeValidationError("cannot move root")
-    target = await _get_or_404(session, new_parent_id, user_id)
+    target = await _get_or_404(session, new_parent_id, user_id, min_role="editor")
     if not target.is_folder:
         raise NodeValidationError("target must be a folder")
     if new_parent_id == node_id:
         raise NodeValidationError("cannot move into self")
     if await is_under(session, node_id, new_parent_id):
         raise NodeValidationError("cannot move into own descendant")
-    if await _same_name_exists(session, new_parent_id, node.name, user_id, exclude_id=node_id):
+    if await _same_name_exists(session, new_parent_id, node.name, exclude_id=node_id):
         raise ConflictError("name already exists in target folder")
     node.parent_id = new_parent_id
     node.updated_at = datetime.now(timezone.utc)
@@ -374,7 +445,7 @@ async def delete_cascade(session: AsyncSession, node_id: str, user_id: str) -> l
     删除子树；返回待删存储对象列表 (backend_id, bucket, object_key)。
     须在事务 commit 成功后再执行物理删除。
     """
-    node = await _get_or_404(session, node_id, user_id)
+    node = await _get_or_404(session, node_id, user_id, min_role="editor")
     if node.parent_id is None:
         raise NodeValidationError("cannot delete root")
     ordered_ids = await _collect_subtree_post_order(session, node_id)

@@ -1,0 +1,187 @@
+from __future__ import annotations
+
+from fastapi import HTTPException
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.collaborator import FolderCollaborator
+from app.models.node import Node
+from app.models.user import User
+from app.schemas.collaborator import CollaboratorOut, SharedFolderOut
+from app.services.node_service import _get_or_404
+
+ROLE_LEVEL = {"viewer": 0, "editor": 1, "admin": 2}
+
+
+def _require_min_role(role: str, min_role: str) -> None:
+    if ROLE_LEVEL.get(role, -1) < ROLE_LEVEL.get(min_role, 0):
+        raise HTTPException(status_code=403, detail="权限不足")
+
+
+async def _require_admin_or_owner(
+    session: AsyncSession, folder_id: str, user_id: str
+) -> Node:
+    folder = await session.get(Node, folder_id)
+    if not folder or not folder.is_folder:
+        raise HTTPException(status_code=404, detail="文件夹不存在")
+    if folder.owner_id == user_id:
+        return folder
+    collab = await session.scalar(
+        select(FolderCollaborator).where(
+            FolderCollaborator.folder_id == folder_id,
+            FolderCollaborator.user_id == user_id,
+        )
+    )
+    if not collab or collab.role != "admin":
+        raise HTTPException(status_code=403, detail="需要文件夹管理员权限")
+    return folder
+
+
+async def _get_collaborator_role(
+    session: AsyncSession, node_id: str, user_id: str
+) -> str | None:
+    """沿祖先链向上查找协作记录，返回角色或 None。"""
+    cur_id: str | None = node_id
+    while cur_id:
+        collab = await session.scalar(
+            select(FolderCollaborator).where(
+                FolderCollaborator.folder_id == cur_id,
+                FolderCollaborator.user_id == user_id,
+            )
+        )
+        if collab:
+            return collab.role
+        n = await session.get(Node, cur_id)
+        if not n:
+            break
+        cur_id = n.parent_id
+    return None
+
+
+async def list_collaborators(
+    session: AsyncSession, folder_id: str, user_id: str
+) -> list[CollaboratorOut]:
+    folder = await _require_admin_or_owner(session, folder_id, user_id)
+    rows = await session.execute(
+        select(FolderCollaborator, User.username)
+        .join(User, FolderCollaborator.user_id == User.id)
+        .where(FolderCollaborator.folder_id == folder_id)
+    )
+    return [
+        CollaboratorOut(
+            id=row.FolderCollaborator.id,
+            folder_id=row.FolderCollaborator.folder_id,
+            user_id=row.FolderCollaborator.user_id,
+            username=row.username,
+            role=row.FolderCollaborator.role,
+            created_at=row.FolderCollaborator.created_at,
+        )
+        for row in rows.all()
+    ]
+
+
+async def add_collaborator(
+    session: AsyncSession,
+    folder_id: str,
+    username: str,
+    role: str,
+    invited_by_id: str,
+) -> CollaboratorOut:
+    folder = await _require_admin_or_owner(session, folder_id, invited_by_id)
+    target = await session.scalar(
+        select(User).where(User.username == username)
+    )
+    if not target:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    if target.id == folder.owner_id:
+        raise HTTPException(status_code=400, detail="文件夹所有者无需添加为协作者")
+    existing = await session.scalar(
+        select(FolderCollaborator).where(
+            FolderCollaborator.folder_id == folder_id,
+            FolderCollaborator.user_id == target.id,
+        )
+    )
+    if existing:
+        raise HTTPException(status_code=409, detail="该用户已是协作者")
+    collab = FolderCollaborator(
+        folder_id=folder_id,
+        user_id=target.id,
+        role=role,
+        invited_by=invited_by_id,
+    )
+    session.add(collab)
+    await session.flush()
+    return CollaboratorOut(
+        id=collab.id,
+        folder_id=collab.folder_id,
+        user_id=collab.user_id,
+        username=target.username,
+        role=collab.role,
+        created_at=collab.created_at,
+    )
+
+
+async def update_collaborator(
+    session: AsyncSession,
+    folder_id: str,
+    target_user_id: str,
+    role: str,
+    requested_by_id: str,
+) -> CollaboratorOut:
+    await _require_admin_or_owner(session, folder_id, requested_by_id)
+    collab = await session.scalar(
+        select(FolderCollaborator).where(
+            FolderCollaborator.folder_id == folder_id,
+            FolderCollaborator.user_id == target_user_id,
+        )
+    )
+    if not collab:
+        raise HTTPException(status_code=404, detail="协作者不存在")
+    collab.role = role
+    await session.flush()
+    user = await session.get(User, target_user_id)
+    return CollaboratorOut(
+        id=collab.id,
+        folder_id=collab.folder_id,
+        user_id=collab.user_id,
+        username=user.username if user else "",
+        role=collab.role,
+        created_at=collab.created_at,
+    )
+
+
+async def remove_collaborator(
+    session: AsyncSession,
+    folder_id: str,
+    target_user_id: str,
+    requested_by_id: str,
+) -> None:
+    await _require_admin_or_owner(session, folder_id, requested_by_id)
+    collab = await session.scalar(
+        select(FolderCollaborator).where(
+            FolderCollaborator.folder_id == folder_id,
+            FolderCollaborator.user_id == target_user_id,
+        )
+    )
+    if not collab:
+        raise HTTPException(status_code=404, detail="协作者不存在")
+    await session.delete(collab)
+    await session.flush()
+
+
+async def list_shared_with_me(
+    session: AsyncSession, user_id: str
+) -> list[SharedFolderOut]:
+    rows = await session.execute(
+        select(FolderCollaborator, Node.name)
+        .join(Node, FolderCollaborator.folder_id == Node.id)
+        .where(FolderCollaborator.user_id == user_id)
+    )
+    return [
+        SharedFolderOut(
+            folder_id=row.FolderCollaborator.folder_id,
+            folder_name=row.name or "文件夹",
+            role=row.FolderCollaborator.role,
+        )
+        for row in rows.all()
+    ]

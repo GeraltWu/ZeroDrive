@@ -23,6 +23,7 @@ load_dotenv(os.path.join(_parent, ".env"))
 from sqlalchemy import select, text
 from app.db.base import Base
 from app.db.session import AsyncSessionLocal, engine
+import app.models.collaborator  # noqa: F401 — 注册 FolderCollaborator 到 metadata
 from app.models.node import ROOT_FOLDER_ID, Node
 from app.models.user import User
 from app.core.config import get_settings

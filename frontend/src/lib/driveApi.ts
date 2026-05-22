@@ -1,5 +1,5 @@
 import { api, clearAccessToken, setAccessToken, unwrap } from './api'
-import type { BreadcrumbItem, DriveNode, FolderTreeItem } from '../types/node'
+import type { BreadcrumbItem, Collaborator, DriveNode, FolderTreeItem, SharedFolder } from '../types/node'
 
 export async function fetchRootId(): Promise<string> {
   const res = await api.get('/nodes/root')
@@ -97,4 +97,38 @@ export async function logout(): Promise<void> {
 export async function me(): Promise<{ username: string }> {
   const res = await api.get('/auth/me')
   return unwrap<{ username: string }>(res.data)
+}
+
+// Collaborator APIs
+
+export async function listCollaborators(folderId: string): Promise<Collaborator[]> {
+  const res = await api.get(`/collaborators/${folderId}`)
+  return unwrap<Collaborator[]>(res.data)
+}
+
+export async function addCollaborator(
+  folderId: string,
+  username: string,
+  role: string,
+): Promise<Collaborator> {
+  const res = await api.post(`/collaborators/${folderId}`, { username, role })
+  return unwrap<Collaborator>(res.data)
+}
+
+export async function updateCollaborator(
+  folderId: string,
+  targetUserId: string,
+  role: string,
+): Promise<Collaborator> {
+  const res = await api.put(`/collaborators/${folderId}/${targetUserId}`, { role })
+  return unwrap<Collaborator>(res.data)
+}
+
+export async function removeCollaborator(folderId: string, targetUserId: string): Promise<void> {
+  await api.delete(`/collaborators/${folderId}/${targetUserId}`)
+}
+
+export async function listSharedWithMe(): Promise<SharedFolder[]> {
+  const res = await api.get('/collaborators/with-me/list')
+  return unwrap<SharedFolder[]>(res.data)
 }

@@ -14,6 +14,8 @@ class NodeOut(BaseModel):
     size: int
     mime_type: str | None = None
     meta_json: dict[str, Any] | None = None
+    owner_id: str | None = None
+    owner_username: str | None = None
     updated_at: datetime
 
     @field_validator("updated_at", mode="before")
