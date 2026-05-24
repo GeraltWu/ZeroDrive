@@ -1,5 +1,6 @@
 import { type ReactNode, useState } from 'react'
-import { ActionIcon, Box, Button, Group, Menu, Table, Text } from '@mantine/core'
+import { ActionIcon, Box, Button, Group, Menu, Table, Text, TextInput, useMantineTheme } from '@mantine/core'
+import { useMediaQuery } from '@mantine/hooks'
 import {
   IconArrowDown,
   IconArrowUp,
@@ -7,14 +8,27 @@ import {
   IconCheck,
   IconFolderPlus,
   IconLayoutGrid,
+  IconLink,
   IconList,
+  IconSearch,
   IconUpload,
   IconUsers,
+  IconX,
 } from '@tabler/icons-react'
 
 export type ViewMode = 'list' | 'small' | 'large'
 export type SortKey = 'name' | 'size' | 'updated_at'
 export type SortDir = 'asc' | 'desc'
+
+export type UploadStatus = 'uploading' | 'success' | 'failed'
+
+export interface UploadItem {
+  id: string
+  name: string
+  progress: number
+  status: UploadStatus
+  cancel: () => void
+}
 
 const viewModeLabels: Record<ViewMode, string> = {
   list: '列表',
@@ -57,15 +71,13 @@ function SortableTh({
       onMouseLeave={() => setHovered(false)}
       style={{
         cursor: 'pointer',
-        backgroundColor: hovered ? 'var(--mantine-color-blue-0)' : undefined,
+        backgroundColor: hovered ? 'var(--mantine-color-blue-light)' : undefined,
         transition: 'background-color 150ms ease',
       }}
       onClick={() => onSort(field)}
     >
       <Group gap={4} wrap="nowrap">
-        <Text span inherit>
-          {label}
-        </Text>
+        <Text span inherit>{label}</Text>
         {active && (
           sortDir === 'asc' ? <IconArrowUp size={14} /> : <IconArrowDown size={14} />
         )}
@@ -75,8 +87,9 @@ function SortableTh({
 }
 
 export function DriveContentPane({
-  uploading,
-  uploadProgress,
+  isUploading,
+  searchQuery,
+  onSearchChange,
   viewMode,
   onViewModeChange,
   sortKey,
@@ -84,14 +97,16 @@ export function DriveContentPane({
   onSortChange,
   onNewFolder,
   onPickFiles,
-  isOwnFolder,
+  canManageCollaborators,
   onManageCollaborators,
+  onCreateShareLink,
   tableBody,
   gridBody,
   contextMenu,
 }: {
-  uploading: boolean
-  uploadProgress: { done: number; total: number }
+  isUploading: boolean
+  searchQuery: string
+  onSearchChange: (q: string) => void
   viewMode: ViewMode
   onViewModeChange: (mode: ViewMode) => void
   sortKey: SortKey
@@ -99,12 +114,16 @@ export function DriveContentPane({
   onSortChange: (key: SortKey) => void
   onNewFolder: () => void
   onPickFiles: (files: FileList | null) => void
-  isOwnFolder: boolean
+  canManageCollaborators: boolean
   onManageCollaborators: () => void
+  onCreateShareLink: () => void
   tableBody: ReactNode
   gridBody: ReactNode
   contextMenu: ReactNode
 }) {
+  const theme = useMantineTheme()
+  const isMobile = useMediaQuery(`(max-width: ${theme.breakpoints.sm})`) ?? false
+
   return (
     <Box style={{ flex: '1 1 0%', minWidth: 0, alignSelf: 'stretch' }}>
       <Group justify="space-between" wrap="wrap" mb="sm" gap="sm">
@@ -112,15 +131,18 @@ export function DriveContentPane({
           <Button leftSection={<IconFolderPlus size={18} />} variant="light" onClick={onNewFolder}>
             新建文件夹
           </Button>
-          <Button component="label" htmlFor="file-up" leftSection={<IconUpload size={18} />} loading={uploading}>
+          <Button component="label" htmlFor="file-up" leftSection={<IconUpload size={18} />} loading={isUploading}>
             上传
           </Button>
           <input id="file-up" type="file" multiple hidden onChange={(e) => onPickFiles(e.target.files)} />
-          {isOwnFolder && (
+          {canManageCollaborators && (
             <Button leftSection={<IconUsers size={18} />} variant="subtle" onClick={onManageCollaborators}>
               协作
             </Button>
           )}
+          <Button leftSection={<IconLink size={18} />} variant="subtle" onClick={onCreateShareLink}>
+            分享
+          </Button>
           <Menu shadow="md" width={140}>
             <Menu.Target>
               <ActionIcon variant="subtle" size="lg">
@@ -164,11 +186,21 @@ export function DriveContentPane({
           </Menu>
         </Group>
         <Group gap="sm">
-          <Text size="sm" c="dimmed">
-            {uploading
-              ? `正在上传（${uploadProgress.done}/${uploadProgress.total}）`
-              : '可将文件拖入此页任意区域上传至当前文件夹。'}
-          </Text>
+          <TextInput
+            placeholder="搜索文件..."
+            leftSection={<IconSearch size={16} />}
+            rightSection={
+              searchQuery ? (
+                <ActionIcon size="xs" variant="transparent" onClick={() => onSearchChange('')}>
+                  <IconX size={14} />
+                </ActionIcon>
+              ) : undefined
+            }
+            value={searchQuery}
+            onChange={(e) => onSearchChange(e.currentTarget.value)}
+            size="sm"
+            style={{ width: 220 }}
+          />
         </Group>
       </Group>
 
@@ -183,9 +215,13 @@ export function DriveContentPane({
           <Table.Thead>
             <Table.Tr>
               <SortableTh field="name" label="名称" sortKey={sortKey} sortDir={sortDir} onSort={onSortChange} />
-              <SortableTh field="size" label="大小" w={100} sortKey={sortKey} sortDir={sortDir} onSort={onSortChange} />
-              <SortableTh field="updated_at" label="修改时间" w={180} sortKey={sortKey} sortDir={sortDir} onSort={onSortChange} />
-              <Table.Th w={100}>下载</Table.Th>
+              {!isMobile && (
+                <>
+                  <SortableTh field="size" label="大小" w={100} sortKey={sortKey} sortDir={sortDir} onSort={onSortChange} />
+                  <SortableTh field="updated_at" label="修改时间" w={180} sortKey={sortKey} sortDir={sortDir} onSort={onSortChange} />
+                  <Table.Th w={100}>下载</Table.Th>
+                </>
+              )}
               <Table.Th w={60} />
             </Table.Tr>
           </Table.Thead>

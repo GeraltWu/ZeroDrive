@@ -55,6 +55,12 @@ async def update_collaborator(
     return ok(updated.model_dump(mode="json")).model_dump()
 
 
+@router.delete("/{folder_id}/leave", response_model=dict)
+async def leave_folder(folder_id: str, user: CurrentUser, db: Db) -> dict:
+    await collaborator_service.leave_collaboration(db, folder_id, user.id)
+    return ok(None).model_dump()
+
+
 @router.delete("/{folder_id}/{target_user_id}", response_model=dict)
 async def remove_collaborator(
     folder_id: str,

@@ -26,23 +26,14 @@ async def _require_admin_or_owner(
         raise HTTPException(status_code=404, detail="文件夹不存在")
     if folder.owner_id == user_id:
         return folder
-    collab = await session.scalar(
-        select(FolderCollaborator).where(
-            FolderCollaborator.folder_id == folder_id,
-            FolderCollaborator.user_id == user_id,
-        )
-    )
-    if not collab or collab.role != "admin":
-        raise HTTPException(status_code=403, detail="需要文件夹管理员权限")
-    return folder
 
-
-async def _get_collaborator_role(
-    session: AsyncSession, node_id: str, user_id: str
-) -> str | None:
-    """沿祖先链向上查找协作记录，返回角色或 None。"""
-    cur_id: str | None = node_id
+    cur_id: str | None = folder_id
     while cur_id:
+        n = await session.get(Node, cur_id)
+        if not n:
+            break
+        if n.is_folder and n.owner_id == user_id:
+            return folder
         collab = await session.scalar(
             select(FolderCollaborator).where(
                 FolderCollaborator.folder_id == cur_id,
@@ -50,12 +41,12 @@ async def _get_collaborator_role(
             )
         )
         if collab:
-            return collab.role
-        n = await session.get(Node, cur_id)
-        if not n:
-            break
+            if collab.role != "admin":
+                raise HTTPException(status_code=403, detail="需要文件夹管理员权限")
+            return folder
         cur_id = n.parent_id
-    return None
+
+    raise HTTPException(status_code=403, detail="需要文件夹管理员权限")
 
 
 async def list_collaborators(
@@ -165,6 +156,36 @@ async def remove_collaborator(
     )
     if not collab:
         raise HTTPException(status_code=404, detail="协作者不存在")
+    await session.delete(collab)
+    await session.flush()
+
+
+async def leave_collaboration(
+    session: AsyncSession,
+    folder_id: str,
+    user_id: str,
+) -> None:
+    collab = await session.scalar(
+        select(FolderCollaborator).where(
+            FolderCollaborator.folder_id == folder_id,
+            FolderCollaborator.user_id == user_id,
+        )
+    )
+    if not collab:
+        raise HTTPException(status_code=404, detail="不在此协作中")
+    if collab.role == "admin":
+        other_admin = await session.scalar(
+            select(FolderCollaborator.id).where(
+                FolderCollaborator.folder_id == folder_id,
+                FolderCollaborator.role == "admin",
+                FolderCollaborator.user_id != user_id,
+            )
+        )
+        if not other_admin:
+            raise HTTPException(
+                status_code=400,
+                detail="作为唯一的管理员，请先将管理员权限转让给其他成员后再退出",
+            )
     await session.delete(collab)
     await session.flush()
 

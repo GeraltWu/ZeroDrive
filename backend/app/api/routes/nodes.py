@@ -44,6 +44,16 @@ async def list_children(
     return ok([r.model_dump(mode="json") for r in items]).model_dump()
 
 
+@router.get("/search", response_model=dict)
+async def search(
+    q: str,
+    user: CurrentUser,
+    db: Db,
+) -> dict:
+    items = await node_service.search_nodes(db, q, user.id)
+    return ok([r.model_dump(mode="json") for r in items]).model_dump()
+
+
 @router.get("/{node_id}/breadcrumb")
 async def breadcrumb(
     node_id: str,
@@ -204,6 +214,17 @@ async def reparse_meta(
 ) -> dict:
     updated = await node_service.reparse_meta(db, node_id, user.id)
     return ok(updated.model_dump(mode="json")).model_dump()
+
+
+@router.post("/{node_id}/copy")
+async def copy(
+    node_id: str,
+    body: MoveBody,
+    user: CurrentUser,
+    db: Db,
+) -> dict:
+    created = await node_service.copy_node(db, node_id, body.parent_id, user.id)
+    return ok(created.model_dump(mode="json")).model_dump()
 
 
 @router.post("/{node_id}/move")

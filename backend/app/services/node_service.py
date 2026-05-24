@@ -41,26 +41,6 @@ class NodeValidationError(Exception):
 ROLE_LEVEL = {"viewer": 0, "editor": 1, "admin": 2}
 
 
-async def _get_collaborator_role(
-    session: AsyncSession, node_id: str, user_id: str
-) -> str | None:
-    cur_id: str | None = node_id
-    while cur_id:
-        collab = await session.scalar(
-            select(FolderCollaborator).where(
-                FolderCollaborator.folder_id == cur_id,
-                FolderCollaborator.user_id == user_id,
-            )
-        )
-        if collab:
-            return collab.role
-        n = await session.get(Node, cur_id)
-        if not n:
-            break
-        cur_id = n.parent_id
-    return None
-
-
 async def _check_access(
     session: AsyncSession, node: Node, user_id: str, min_role: str = "viewer"
 ) -> None:
@@ -68,11 +48,28 @@ async def _check_access(
         return
     if node.owner_id is None:
         return
-    role = await _get_collaborator_role(session, node.id, user_id)
-    if not role:
-        raise HTTPException(status_code=403, detail="无权访问")
-    if ROLE_LEVEL.get(role, -1) < ROLE_LEVEL.get(min_role, 0):
-        raise HTTPException(status_code=403, detail="权限不足")
+
+    cur_id: str | None = node.id
+    while cur_id:
+        n = await session.get(Node, cur_id)
+        if not n:
+            break
+        # 文件夹的 owner 拥有对该文件夹内所有内容的完全权限
+        if n.is_folder and n.owner_id == user_id:
+            return
+        collab = await session.scalar(
+            select(FolderCollaborator).where(
+                FolderCollaborator.folder_id == cur_id,
+                FolderCollaborator.user_id == user_id,
+            )
+        )
+        if collab:
+            if ROLE_LEVEL.get(collab.role, -1) < ROLE_LEVEL.get(min_role, 0):
+                raise HTTPException(status_code=403, detail="权限不足")
+            return
+        cur_id = n.parent_id
+
+    raise HTTPException(status_code=403, detail="无权访问")
 
 
 def _check_owner(node: Node, user_id: str) -> None:
@@ -475,6 +472,111 @@ async def delete_cascade(session: AsyncSession, node_id: str, user_id: str) -> l
         await session.flush()
 
     return to_purge
+
+
+async def search_nodes(
+    session: AsyncSession, q: str, user_id: str
+) -> list[NodeOut]:
+    pattern = f"%{q}%"
+    own = await session.execute(
+        select(Node)
+        .where(
+            Node.owner_id == user_id,
+            Node.name.ilike(pattern),
+        )
+        .order_by(Node.is_folder.desc(), Node.name.asc())
+        .limit(100)
+    )
+    nodes = list(own.scalars().all())
+    shared = await session.execute(
+        select(Node)
+        .select_from(Node)
+        .join(FolderCollaborator, FolderCollaborator.folder_id == Node.id)
+        .where(
+            FolderCollaborator.user_id == user_id,
+            Node.name.ilike(pattern),
+        )
+        .order_by(Node.is_folder.desc(), Node.name.asc())
+        .limit(100)
+    )
+    seen = {n.id for n in nodes}
+    for n in shared.scalars().all():
+        if n.id not in seen:
+            nodes.append(n)
+            seen.add(n.id)
+    nodes.sort(key=lambda n: (not n.is_folder, (n.name or "").lower()))
+    usernames = await _bulk_usernames(session, nodes)
+    return [to_out(n, usernames.get(n.owner_id or "")) for n in nodes[:100]]
+
+
+async def copy_node(
+    session: AsyncSession,
+    node_id: str,
+    target_parent_id: str,
+    user_id: str,
+) -> NodeOut:
+    src = await _get_or_404(session, node_id, user_id, min_role="viewer")
+    target = await _get_or_404(session, target_parent_id, user_id, min_role="editor")
+    if not target.is_folder:
+        raise NodeValidationError("目标必须是文件夹")
+
+    base_name = src.name or "未命名"
+    name = base_name
+    counter = 1
+    while await _same_name_exists(session, target_parent_id, name):
+        counter += 1
+        name = f"{base_name} ({counter})"
+
+    # 递归拷贝文件/文件夹映射（旧的 blob_id → 新的 blob_id）
+    blob_map: dict[str, str] = {}
+
+    async def _copy_tree(source_id: str, dest_parent_id: str) -> Node:
+        source = await session.get(Node, source_id)
+        if not source:
+            raise NodeNotFoundError(source_id)
+        new_node = Node(
+            id=str(uuid.uuid4()),
+            parent_id=dest_parent_id,
+            name=source.name,
+            is_folder=source.is_folder,
+            size=source.size,
+            blob_id=None,
+            mime_type=source.mime_type,
+            meta_json=source.meta_json,
+            owner_id=user_id,
+            updated_at=datetime.now(timezone.utc),
+        )
+        if source.blob_id:
+            if source.blob_id not in blob_map:
+                src_blob = await session.get(Blob, source.blob_id)
+                if src_blob:
+                    new_blob = Blob(
+                        id=str(uuid.uuid4()),
+                        storage_backend_id=src_blob.storage_backend_id,
+                        bucket=src_blob.bucket,
+                        object_key=src_blob.object_key,
+                        size=source.size,
+                        refcount=1,
+                    )
+                    session.add(new_blob)
+                    await session.flush()
+                    blob_map[source.blob_id] = new_blob.id
+            new_node.blob_id = blob_map.get(source.blob_id)
+        session.add(new_node)
+        await session.flush()
+
+        if source.is_folder:
+            children = await session.execute(
+                select(Node).where(Node.parent_id == source.id)
+            )
+            for child in children.scalars().all():
+                await _copy_tree(child.id, new_node.id)
+        return new_node
+
+    cloned = await _copy_tree(node_id, target_parent_id)
+    cloned.name = name
+    await session.flush()
+    return to_out(cloned)
 
 
 async def purge_storage_after_delete(purged: list[tuple[str, str, str]]) -> None:

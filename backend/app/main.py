@@ -10,11 +10,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.api.routes import auth, bot, collaborators, nodes
+from app.api.routes import access_logs, auth, bot, collaborators, favorites, nodes, shares
 from app.core.config import get_settings
+from app.db.base import Base
 from app.db.session import engine
 import app.models.storage  # noqa: F401 — 注册 Blob / StorageBackend 到 metadata
 import app.models.collaborator  # noqa: F401 — 注册 FolderCollaborator 到 metadata
+import app.models.favorite  # noqa: F401 — 注册 Favorite 到 metadata
+import app.models.share_link  # noqa: F401 — 注册 ShareLink 到 metadata
+import app.models.access_log  # noqa: F401 — 注册 AccessLog 到 metadata
 from app.schemas.response import err, ok
 from app.services.bot_path import PathNotFoundError, PathValidationError
 from app.services.bot_service import NoFilesError
@@ -32,6 +36,17 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     pathlib.Path(settings.sqlite_path).parent.mkdir(parents=True, exist_ok=True)
     ensure_data_root()
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+        # Migration: add is_active column if upgrading from v1
+        try:
+            await conn.run_sync(
+                lambda sync_conn: sync_conn.exec_driver_sql(
+                    "ALTER TABLE share_links ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 1"
+                )
+            )
+        except Exception:
+            pass  # column already exists
     yield
     await engine.dispose()
 
@@ -123,3 +138,7 @@ app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(bot.router, prefix="/api/bot", tags=["bot"])
 app.include_router(nodes.router, prefix="/api/nodes", tags=["nodes"])
 app.include_router(collaborators.router, prefix="/api/collaborators", tags=["collaborators"])
+app.include_router(favorites.router, prefix="/api/favorites", tags=["favorites"])
+app.include_router(shares.router, prefix="/api/share-links", tags=["share-links"])
+app.include_router(shares.public_router, prefix="/api/public/share", tags=["public"])
+app.include_router(access_logs.router, prefix="/api/access-logs", tags=["access-logs"])

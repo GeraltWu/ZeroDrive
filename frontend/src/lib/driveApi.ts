@@ -1,5 +1,5 @@
 import { api, clearAccessToken, setAccessToken, unwrap } from './api'
-import type { BreadcrumbItem, Collaborator, DriveNode, FolderTreeItem, SharedFolder } from '../types/node'
+import type { AccessLog, BreadcrumbItem, Collaborator, DriveNode, FolderTreeItem, ShareLink, ShareLinkPublicInfo, ShareLinkWithNode, SharedFolder } from '../types/node'
 
 export async function fetchRootId(): Promise<string> {
   const res = await api.get('/nodes/root')
@@ -29,11 +29,23 @@ export async function createFolder(
   return unwrap<DriveNode>(res.data)
 }
 
-export async function uploadFile(parentId: string, file: File): Promise<DriveNode> {
+export async function uploadFile(
+  parentId: string,
+  file: File,
+  signal?: AbortSignal,
+  onProgress?: (pct: number) => void,
+): Promise<DriveNode> {
   const fd = new FormData()
   fd.append('parent_id', parentId)
   fd.append('file', file)
-  const res = await api.post('/nodes/upload', fd)
+  const res = await api.post('/nodes/upload', fd, {
+    signal,
+    onUploadProgress: (e) => {
+      if (onProgress && e.total) {
+        onProgress(Math.round((e.loaded * 100) / e.total))
+      }
+    },
+  })
   return unwrap<DriveNode>(res.data)
 }
 
@@ -131,4 +143,128 @@ export async function removeCollaborator(folderId: string, targetUserId: string)
 export async function listSharedWithMe(): Promise<SharedFolder[]> {
   const res = await api.get('/collaborators/with-me/list')
   return unwrap<SharedFolder[]>(res.data)
+}
+
+// Search
+
+export async function searchNodes(q: string): Promise<DriveNode[]> {
+  if (!q.trim()) return []
+  const res = await api.get('/nodes/search', { params: { q } })
+  return unwrap<DriveNode[]>(res.data)
+}
+
+// Favorites
+
+export async function listFavorites(): Promise<DriveNode[]> {
+  const res = await api.get('/favorites')
+  return unwrap<DriveNode[]>(res.data)
+}
+
+export async function addFavorite(nodeId: string): Promise<void> {
+  await api.post(`/favorites/${nodeId}`)
+}
+
+export async function removeFavorite(nodeId: string): Promise<void> {
+  await api.delete(`/favorites/${nodeId}`)
+}
+
+// Copy
+
+export async function copyNode(nodeId: string, targetParentId: string): Promise<DriveNode> {
+  const res = await api.post(`/nodes/${nodeId}/copy`, { parent_id: targetParentId })
+  return unwrap<DriveNode>(res.data)
+}
+
+// Share Links
+
+export async function createShareLink(
+  nodeId: string,
+  options?: { password?: string; expireInHours?: number; maxAccessCount?: number },
+): Promise<ShareLink> {
+  const res = await api.post(`/share-links/${nodeId}`, {
+    password: options?.password || undefined,
+    expire_in_hours: options?.expireInHours || undefined,
+    max_access_count: options?.maxAccessCount || undefined,
+  })
+  return unwrap<ShareLink>(res.data)
+}
+
+export async function listShareLinks(nodeId: string): Promise<ShareLink[]> {
+  const res = await api.get(`/share-links/${nodeId}`)
+  return unwrap<ShareLink[]>(res.data)
+}
+
+export async function revokeShareLink(linkId: string): Promise<void> {
+  await api.delete(`/share-links/${linkId}`)
+}
+
+export async function toggleShareLink(linkId: string): Promise<ShareLink> {
+  const res = await api.patch(`/share-links/${linkId}/toggle`)
+  return unwrap<ShareLink>(res.data)
+}
+
+export async function listAllShareLinks(): Promise<ShareLinkWithNode[]> {
+  const res = await api.get('/share-links')
+  return unwrap<ShareLinkWithNode[]>(res.data)
+}
+
+// Public share — use fetch() to avoid auth interceptor
+
+async function publicFetch<T>(path: string, options?: RequestInit): Promise<T> {
+  const res = await fetch(`/api${path}`, {
+    ...options,
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || body.msg || `请求失败 (${res.status})`)
+  }
+  const body = await res.json()
+  if (body && typeof body === 'object' && 'code' in body && body.code !== 0) {
+    throw new Error(body.msg || '未知错误')
+  }
+  return (body as { data: T }).data
+}
+
+export async function getPublicShareInfo(token: string): Promise<ShareLinkPublicInfo> {
+  return publicFetch<ShareLinkPublicInfo>(`/public/share/${token}`)
+}
+
+export async function verifySharePassword(
+  token: string,
+  password: string,
+): Promise<{ valid: boolean; access_token: string }> {
+  return publicFetch(`/public/share/${token}/verify`, {
+    method: 'POST',
+    body: JSON.stringify({ password }),
+  })
+}
+
+export function shareDownloadUrl(token: string, accessToken?: string): string {
+  const base = `/api/public/share/${token}/download`
+  if (accessToken) return `${base}?share_token=${encodeURIComponent(accessToken)}`
+  return base
+}
+
+export function absoluteShareUrl(token: string): string {
+  if (typeof window === 'undefined') return `/s/${token}`
+  return `${window.location.origin}/s/${token}`
+}
+
+export async function listAccessLogs(limit = 200): Promise<AccessLog[]> {
+  const res = await api.get(`/access-logs?limit=${limit}`)
+  return unwrap<AccessLog[]>(res.data)
+}
+
+export async function leaveSharedFolder(folderId: string): Promise<void> {
+  await api.delete(`/collaborators/${folderId}/leave`)
+}
+
+export async function joinShareFolder(
+  token: string,
+  shareToken?: string,
+): Promise<{ node_id: string }> {
+  const qs = shareToken ? `?share_token=${encodeURIComponent(shareToken)}` : ''
+  const res = await api.post(`/share-links/join/${token}${qs}`)
+  return unwrap<{ node_id: string }>(res.data)
 }

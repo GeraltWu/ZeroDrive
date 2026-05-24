@@ -3,26 +3,32 @@ import type { RefObject } from 'react'
 import {
   ActionIcon,
   Anchor,
-  AppShell,
   Box,
   Button,
+  Drawer,
   Group,
   Menu,
   Paper,
   Table,
   Text,
   TextInput,
-  Title,
 } from '@mantine/core'
-import { useMergedRef } from '@mantine/hooks'
+import { useMediaQuery, useMergedRef } from '@mantine/hooks'
+
+const LAST_FOLDER_KEY = 'zd_last_folder'
 import { modals } from '@mantine/modals'
 import { notifications } from '@mantine/notifications'
 import {
+  IconClipboardCheck,
+  IconClipboardCopy,
   IconCopy,
   IconDots,
   IconInfoCircle,
+  IconLink,
   IconPencil,
   IconPlayerPlay,
+  IconStar,
+  IconStarFilled,
   IconTrash,
   IconUpload,
 } from '@tabler/icons-react'
@@ -40,13 +46,16 @@ import {
 } from '@dnd-kit/core'
 import { CSS } from '@dnd-kit/utilities'
 import { CollaboratorDialog } from '../components/drive/CollaboratorDialog'
-import { DriveContentPane, type SortDir, type SortKey, type ViewMode } from '../components/drive/DriveContentPane'
+import { DriveContentPane, type SortDir, type SortKey, type UploadItem, type ViewMode } from '../components/drive/DriveContentPane'
 import { DriveContextMenu } from '../components/drive/DriveContextMenu'
 import { DriveGrid } from '../components/drive/DriveGrid'
 import { DriveSidebar } from '../components/drive/DriveSidebar'
 import { DriveToolbar } from '../components/drive/DriveToolbar'
+import { FloatingUploadPanel } from '../components/drive/FloatingUploadPanel'
 import { MediaPreviewModal } from '../components/drive/MediaPreviewModal'
 import { NodePropertiesModal } from '../components/drive/NodePropertiesModal'
+import { useAppContext } from '../App'
+import { ShareLinkDialog } from '../components/drive/ShareLinkDialog'
 import { copyTextToClipboard } from '../lib/clipboard'
 import { FileTypeIcon } from '../lib/fileTypeIcon'
 import * as driveApi from '../lib/driveApi'
@@ -99,6 +108,11 @@ function NodeTableRow({
   openMediaPreview,
   onProperties,
   showOwner,
+  onCopyNode,
+  onToggleFavorite,
+  isFavorited,
+  onCreateShareLink,
+  mobile,
 }: {
   node: DriveNode
   onEnterFolder: (n: DriveNode) => void
@@ -119,6 +133,11 @@ function NodeTableRow({
   openMediaPreview: (n: DriveNode) => void
   onProperties: (n: DriveNode) => void
   showOwner: boolean
+  onCopyNode: (n: DriveNode) => void
+  onToggleFavorite: (n: DriveNode) => void
+  isFavorited: boolean
+  onCreateShareLink: (n: DriveNode) => void
+  mobile: boolean
 }) {
   const drag = useDraggable({
     id: `item:${node.id}`,
@@ -139,7 +158,7 @@ function NodeTableRow({
     background: drop.isOver
       ? 'var(--mantine-color-blue-light)'
       : selected
-        ? 'var(--mantine-color-blue-0)'
+        ? 'var(--mantine-color-blue-light)'
         : undefined,
   }
 
@@ -243,17 +262,19 @@ function NodeTableRow({
           </Anchor>
         )}
       </Table.Td>
-      <Table.Td>{node.is_folder ? '—' : formatBytes(node.size)}</Table.Td>
-      <Table.Td>{new Date(node.updated_at).toLocaleString()}</Table.Td>
-      <Table.Td>
-        {node.is_folder ? (
-          '—'
-        ) : (
-          <Anchor size="sm" href={driveApi.downloadUrl(node.id)} onClick={(e) => e.stopPropagation()}>
-            点击下载
-          </Anchor>
-        )}
-      </Table.Td>
+      {!mobile && <Table.Td>{node.is_folder ? '—' : formatBytes(node.size)}</Table.Td>}
+      {!mobile && <Table.Td>{new Date(node.updated_at).toLocaleString()}</Table.Td>}
+      {!mobile && (
+        <Table.Td>
+          {node.is_folder ? (
+            '—'
+          ) : (
+            <Anchor size="sm" href={driveApi.downloadUrl(node.id)} onClick={(e) => e.stopPropagation()}>
+              点击下载
+            </Anchor>
+          )}
+        </Table.Td>
+      )}
       <Table.Td w={60}>
         <Menu shadow="md" width={200}>
           <Menu.Target>
@@ -305,6 +326,20 @@ function NodeTableRow({
             >
               复制文件名
             </Menu.Item>
+            <Menu.Item leftSection={<IconClipboardCopy size={14} />} onClick={() => onCopyNode(node)}>
+              复制
+            </Menu.Item>
+            {node.is_folder && (
+              <Menu.Item
+                leftSection={isFavorited ? <IconStarFilled size={14} /> : <IconStar size={14} />}
+                onClick={() => onToggleFavorite(node)}
+              >
+                {isFavorited ? '取消收藏' : '添加到收藏'}
+              </Menu.Item>
+            )}
+            <Menu.Item leftSection={<IconLink size={14} />} onClick={() => onCreateShareLink(node)}>
+              分享
+            </Menu.Item>
             <Menu.Item leftSection={<IconInfoCircle size={14} />} onClick={() => onProperties(node)}>
               属性
             </Menu.Item>
@@ -331,6 +366,7 @@ function NodeTableRow({
 }
 
 export function DrivePage() {
+  const { isMobile, sidebarOpen, toggleSidebar } = useAppContext()
   const [rootId, setRootId] = useState<string | null>(null)
   const [nav, setNav] = useState<{ stack: string[]; index: number } | null>(null)
   const [rows, setRows] = useState<DriveNode[]>([])
@@ -339,8 +375,12 @@ export function DrivePage() {
   const [editingNodeId, setEditingNodeId] = useState<string | null>(null)
   const [editDraft, setEditDraft] = useState('')
   const [isFileDragActive, setIsFileDragActive] = useState(false)
-  const [uploading, setUploading] = useState(false)
-  const [uploadProgress, setUploadProgress] = useState({ done: 0, total: 0 })
+  const [uploadItems, setUploadItems] = useState<UploadItem[]>([])
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResults, setSearchResults] = useState<DriveNode[]>([])
+  const [clipboardNode, setClipboardNode] = useState<{ nodeId: string; nodeName: string } | null>(null)
+  const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set())
+  const [favoriteNodes, setFavoriteNodes] = useState<DriveNode[]>([])
   const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null)
   const [draggingNodeIds, setDraggingNodeIds] = useState<string[]>([])
   const [selectedIds, setSelectedIds] = useState<string[]>([])
@@ -369,8 +409,15 @@ export function DrivePage() {
     folderId: string
     folderName: string
   } | null>(null)
-  const [sharedFolderIds, setSharedFolderIds] = useState<Set<string>>(new Set())
+  const [shareLinkDialog, setShareLinkDialog] = useState<{
+    nodeId: string
+    nodeName: string
+  } | null>(null)
+  const [sharedFolderRoles, setSharedFolderRoles] = useState<Map<string, string>>(new Map())
+  const [sharedFolderNames, setSharedFolderNames] = useState<Map<string, string>>(new Map())
   const nameInputRef = useRef<HTMLInputElement>(null)
+  const uploadControllersRef = useRef<Map<string, AbortController>>(new Map())
+  const [refreshKey, setRefreshKey] = useState(0)
   const fileDragDepthRef = useRef(0)
   /** 避免从 Menu 进入编辑时，关闭菜单触发的瞬时 blur 立刻提交并退出编辑 */
   const nameEditBlurOkRef = useRef(false)
@@ -379,8 +426,10 @@ export function DrivePage() {
     () => (nav && nav.stack.length > 0 ? nav.stack[nav.index]! : null),
     [nav],
   )
-  const isOwnFolder = folderId !== null && !sharedFolderIds.has(folderId)
-  const isSharedFolder = folderId !== null && sharedFolderIds.has(folderId)
+  const sharedRole = folderId ? sharedFolderRoles.get(folderId) : undefined
+  const isOwnFolder = folderId !== null && !sharedRole
+  const isSharedFolder = folderId !== null && !!sharedRole
+  const canManageCollaborators = isOwnFolder || sharedRole === 'admin'
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
@@ -390,10 +439,40 @@ export function DrivePage() {
     [flatFolders],
   )
   const rowsById = useMemo(() => new Map(rows.map((r) => [r.id, r] as const)), [rows])
+  const favoriteNodesById = useMemo(
+    () => new Map(favoriteNodes.map((n) => [n.id, n] as const)),
+    [favoriteNodes],
+  )
+  const sharedFoldersById = useMemo(
+    () =>
+      new Map(
+        Array.from(sharedFolderNames.entries()).map(([id, name]) => [
+          id,
+          {
+            id,
+            name,
+            is_folder: true,
+            parent_id: '',
+            size: 0,
+            mime_type: null,
+            meta_json: null,
+            owner_id: '',
+            owner_username: '',
+            blob_id: null,
+            updated_at: '',
+          } as DriveNode,
+        ]),
+      ),
+    [sharedFolderNames],
+  )
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds])
   const sortedRows = useMemo(() => {
     const sorted = [...rows]
     sorted.sort((a, b) => {
+      // 文件夹和文件各自成组：正序文件夹在前，倒序文件在前
+      if (a.is_folder !== b.is_folder) {
+        return sortDir === 'asc' ? (a.is_folder ? -1 : 1) : (a.is_folder ? 1 : -1)
+      }
       let va: string | number, vb: string | number
       switch (sortKey) {
         case 'name':
@@ -401,8 +480,8 @@ export function DrivePage() {
           vb = (b.name || '').toLowerCase()
           break
         case 'size':
-          va = a.is_folder ? -1 : a.size
-          vb = b.is_folder ? -1 : b.size
+          va = a.size
+          vb = b.size
           break
         case 'updated_at':
           va = a.updated_at
@@ -435,8 +514,8 @@ export function DrivePage() {
   const contextMenuTargetNode = useMemo(() => {
     const tid = contextMenu.targetId
     if (!tid) return null
-    return rowsById.get(tid) ?? null
-  }, [contextMenu.targetId, rowsById])
+    return rowsById.get(tid) ?? favoriteNodesById.get(tid) ?? sharedFoldersById.get(tid) ?? null
+  }, [contextMenu.targetId, rowsById, favoriteNodesById, sharedFoldersById])
   const contextMenuPreviewTarget = useMemo(() => {
     if (!contextMenuTargetNode || contextMenuTargetNode.is_folder) return null
     const kind = getMediaPreviewKind(contextMenuTargetNode.name)
@@ -469,27 +548,47 @@ export function DrivePage() {
 
   const refresh = useCallback(async () => {
     if (!folderId) return
-    const [list, bc, tree, shared] = await Promise.all([
-      driveApi.listChildren(folderId),
-      driveApi.fetchBreadcrumb(folderId),
-      driveApi.fetchFolderTree(),
-      driveApi.listSharedWithMe(),
-    ])
-    setRows(list)
-    setCrumbs(bc)
-    setFlatFolders(tree)
-    setSharedFolderIds(new Set(shared.map((s) => s.folder_id)))
-  }, [folderId])
+    let list: DriveNode[]
+    try {
+      // Only the first two depend on folderId; the rest are global.
+      // If the folder was deleted, these 404 and we should recover.
+      const bc = await driveApi.fetchBreadcrumb(folderId)
+      const [l, tree, shared, favs] = await Promise.all([
+        driveApi.listChildren(folderId),
+        driveApi.fetchFolderTree(),
+        driveApi.listSharedWithMe(),
+        driveApi.listFavorites(),
+      ])
+      list = l
+      setCrumbs(bc)
+      setRows(list)
+      setFlatFolders(tree)
+      setSharedFolderRoles(new Map(shared.map((s) => [s.folder_id, s.role])))
+      setSharedFolderNames(new Map(shared.map((s) => [s.folder_id, s.folder_name])))
+      setFavoriteIds(new Set(favs.map((f) => f.id)))
+      setFavoriteNodes(favs)
+      setRefreshKey((k) => k + 1)
+    } catch {
+      localStorage.removeItem(LAST_FOLDER_KEY)
+      if (rootId) setNav({ stack: [rootId], index: 0 })
+      return
+    }
+  }, [folderId, rootId])
+
+  const displayRows = useMemo(() => {
+    if (searchQuery.trim()) return searchResults
+    return sortedRows
+  }, [searchQuery, searchResults, sortedRows])
 
   const selectRange = useCallback(
     (fromId: string, toId: string) => {
-      const from = rows.findIndex((r) => r.id === fromId)
-      const to = rows.findIndex((r) => r.id === toId)
+      const from = displayRows.findIndex((r) => r.id === fromId)
+      const to = displayRows.findIndex((r) => r.id === toId)
       if (from < 0 || to < 0) return [toId]
       const [start, end] = from <= to ? [from, to] : [to, from]
-      return rows.slice(start, end + 1).map((r) => r.id)
+      return displayRows.slice(start, end + 1).map((r) => r.id)
     },
-    [rows],
+    [displayRows],
   )
 
   const applyRowSelection = useCallback(
@@ -514,13 +613,29 @@ export function DrivePage() {
     [selectRange, selectionAnchorId],
   )
 
+  // Restore last folder on mount
   useEffect(() => {
     ;(async () => {
       const id = await driveApi.fetchRootId()
       setRootId(id)
-      setNav({ stack: [id], index: 0 })
+      const f = localStorage.getItem(LAST_FOLDER_KEY)
+      if (f) {
+        setNav({ stack: [id, f], index: 1 })
+      } else {
+        setNav({ stack: [id], index: 0 })
+      }
     })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Persist current folder on change
+  useEffect(() => {
+    if (rootId !== null && folderId !== null && folderId !== rootId) {
+      localStorage.setItem(LAST_FOLDER_KEY, folderId)
+    } else if (rootId !== null && folderId === rootId) {
+      localStorage.removeItem(LAST_FOLDER_KEY)
+    }
+  }, [folderId, rootId])
 
   useEffect(() => {
     const id = requestAnimationFrame(() => {
@@ -561,6 +676,50 @@ export function DrivePage() {
       window.clearTimeout(t1)
     }
   }, [editingNodeId])
+
+  // Search debounce
+  useEffect(() => {
+    const q = searchQuery.trim()
+    if (!q) {
+      setSearchResults([])
+      return
+    }
+    const timer = setTimeout(() => {
+      driveApi.searchNodes(q).then(setSearchResults).catch(() => {})
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [searchQuery])
+
+  // Ctrl+C / Ctrl+V keyboard shortcuts
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
+      if (editingNodeId) return
+      if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+        if (selectedIds.length === 0) return
+        const n = rowsById.get(selectedIds[0]!)
+        if (!n) return
+        e.preventDefault()
+        setClipboardNode({ nodeId: n.id, nodeName: n.name })
+        notifications.show({ color: 'blue', message: `已复制: ${n.name}` })
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
+        if (!clipboardNode || !folderId) return
+        e.preventDefault()
+        void (async () => {
+          try {
+            const created = await driveApi.copyNode(clipboardNode.nodeId, folderId)
+            notifications.show({ color: 'green', message: `已粘贴: ${created.name}` })
+            await refresh()
+          } catch {
+            notifications.show({ color: 'red', message: '粘贴失败' })
+          }
+        })()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [selectedIds, rowsById, editingNodeId, clipboardNode, folderId, refresh])
 
   const clearNameEdit = useCallback(() => {
     setEditingNodeId(null)
@@ -854,6 +1013,47 @@ export function DrivePage() {
     [selectedSet],
   )
 
+  const handleSidebarFavoriteContextMenu = useCallback(
+    (node: DriveNode, x: number, y: number) => {
+      setSelectedIds([node.id])
+      setSelectionAnchorId(node.id)
+      setContextMenu({
+        opened: true,
+        x,
+        y,
+        targetId: node.id,
+      })
+    },
+    [],
+  )
+
+  const handleSharedFolderContextMenu = useCallback(
+    (sf: { folder_id: string; folder_name: string }, x: number, y: number) => {
+      setSelectedIds([sf.folder_id])
+      setSelectionAnchorId(sf.folder_id)
+      setContextMenu({
+        opened: true,
+        x,
+        y,
+        targetId: sf.folder_id,
+      })
+    },
+    [],
+  )
+
+  const handleLeaveSharedFolder = useCallback(
+    async (node: DriveNode) => {
+      try {
+        await driveApi.leaveSharedFolder(node.id)
+        notifications.show({ color: 'green', message: `已退出「${node.name}」` })
+        await refresh()
+      } catch {
+        /* shown by interceptor */
+      }
+    },
+    [refresh],
+  )
+
   const clearSelectionIfOutsideRow = useCallback((e: React.PointerEvent) => {
     const t = e.target as HTMLElement | null
     if (!t) return
@@ -931,59 +1131,123 @@ export function DrivePage() {
     })()
   }
 
+  const onRemoveUploadItem = useCallback((id: string) => {
+    setUploadItems((prev) => prev.filter((x) => x.id !== id))
+    uploadControllersRef.current.delete(id)
+  }, [])
+
   const onPickFiles = useCallback((files: FileList | null) => {
     if (!files?.length || !folderId) return
-    void (async () => {
-      const list = Array.from(files)
-      const total = list.length
-      let done = 0
-      let failed = 0
-      setUploading(true)
-      setUploadProgress({ done: 0, total })
-      notifications.show({
-        id: 'upload-progress',
-        color: 'blue',
-        loading: true,
-        autoClose: false,
-        message: `正在上传（0/${total}）`,
-      })
+    const fileList = Array.from(files)
 
-      try {
-        for (const f of list) {
-          try {
-            await driveApi.uploadFile(folderId, f)
-          } catch {
-            failed += 1
-          }
-          done += 1
-          setUploadProgress({ done, total })
-          notifications.update({
-            id: 'upload-progress',
-            color: 'blue',
-            loading: true,
-            autoClose: false,
-            message: `正在上传（${done}/${total}）`,
-          })
-        }
-
-        notifications.update({
-          id: 'upload-progress',
-          color: failed > 0 ? 'yellow' : 'green',
-          loading: false,
-          autoClose: 3500,
-          message:
-            failed > 0
-              ? `上传完成，成功 ${total - failed} 个，失败 ${failed} 个`
-              : `上传完成，共 ${total} 个文件`,
-        })
-
-        await refresh()
-      } finally {
-        setUploading(false)
-        setUploadProgress({ done: 0, total: 0 })
+    const newItems: UploadItem[] = fileList.map((f) => {
+      const id = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`
+      const controller = new AbortController()
+      uploadControllersRef.current.set(id, controller)
+      return {
+        id,
+        name: f.name,
+        progress: 0,
+        status: 'uploading' as UploadItem['status'],
+        cancel: () => {
+          uploadControllersRef.current.get(id)?.abort()
+          setUploadItems((prev) => prev.filter((x) => x.id !== id))
+          uploadControllersRef.current.delete(id)
+        },
       }
-    })()
+    })
+
+    setUploadItems((prev) => [...prev, ...newItems])
+
+    let failed = 0
+    Promise.allSettled(
+      newItems.map(async (item, i) => {
+        const ctrl = uploadControllersRef.current.get(item.id)!
+        try {
+          await driveApi.uploadFile(folderId, fileList[i]!, ctrl.signal, (pct) => {
+            setUploadItems((prev) => prev.map((x) => (x.id === item.id ? { ...x, progress: pct } : x)))
+          })
+          setUploadItems((prev) =>
+            prev.map((x) => (x.id === item.id ? { ...x, progress: 100, status: 'success' } : x)),
+          )
+          setTimeout(() => {
+            setUploadItems((prev) => prev.filter((x) => x.id !== item.id))
+            uploadControllersRef.current.delete(item.id)
+          }, 3000)
+        } catch (err: any) {
+          if (err?.name === 'CanceledError' || err?.code === 'ERR_CANCELED') return
+          failed += 1
+          setUploadItems((prev) =>
+            prev.map((x) => (x.id === item.id ? { ...x, status: 'failed' } : x)),
+          )
+          setTimeout(() => {
+            setUploadItems((prev) => prev.filter((x) => x.id !== item.id))
+            uploadControllersRef.current.delete(item.id)
+          }, 5000)
+        }
+      }),
+    ).then(() => {
+      if (failed > 0) {
+        notifications.show({
+          color: 'yellow',
+          message: `上传完成，${failed} 个失败`,
+        })
+      }
+      refresh()
+    })
   }, [folderId, refresh])
+
+  const handleToggleFavorite = useCallback(
+    async (node: DriveNode) => {
+      const isFav = favoriteIds.has(node.id)
+      try {
+        if (isFav) {
+          await driveApi.removeFavorite(node.id)
+          setFavoriteIds((prev) => {
+            const next = new Set(prev)
+            next.delete(node.id)
+            return next
+          })
+          setFavoriteNodes((prev) => prev.filter((n) => n.id !== node.id))
+        } else {
+          await driveApi.addFavorite(node.id)
+          setFavoriteIds((prev) => new Set(prev).add(node.id))
+          setFavoriteNodes((prev) => [...prev, node])
+        }
+        setRefreshKey((k) => k + 1)
+        notifications.show({
+          color: 'green',
+          message: isFav ? '已取消收藏' : '已添加收藏',
+        })
+      } catch {
+        notifications.show({ color: 'red', message: '操作失败' })
+      }
+    },
+    [favoriteIds],
+  )
+
+  const handleCreateShareLink = useCallback((node: DriveNode) => {
+    setShareLinkDialog({ nodeId: node.id, nodeName: node.name })
+  }, [])
+
+  const handleCopyNode = useCallback(
+    (node: DriveNode) => {
+      setClipboardNode({ nodeId: node.id, nodeName: node.name })
+      notifications.show({ color: 'blue', message: `已复制: ${node.name}` })
+    },
+    [],
+  )
+
+  const handlePasteNode = useCallback(async () => {
+    if (!clipboardNode || !folderId) return
+    try {
+      const created = await driveApi.copyNode(clipboardNode.nodeId, folderId)
+      notifications.show({ color: 'green', message: `已粘贴: ${created.name}` })
+      await refresh()
+    } catch {
+      notifications.show({ color: 'red', message: '粘贴失败' })
+    }
+  }, [clipboardNode, folderId, refresh])
 
   useEffect(() => {
     const hasFiles = (dt: DataTransfer | null | undefined) =>
@@ -1045,45 +1309,20 @@ export function DrivePage() {
   const canUp = rootId !== null && folderId !== null && folderId !== rootId
 
   if (!rootId || !nav || !folderId) {
-    return (
-      <AppShell padding="md">
-        <AppShell.Main>
-          <Text>加载中…</Text>
-        </AppShell.Main>
-      </AppShell>
-    )
+    return <Text p="md">加载中…</Text>
   }
 
   return (
-    <AppShell
-      header={{ height: 56 }}
-      padding="md"
-      styles={{
-        main: {
-          flex: 1,
-          display: 'flex',
-          flexDirection: 'column',
-          minWidth: 0,
-          minHeight: 0,
-        },
+    <Box
+      style={{
+        flex: 1,
+        display: 'flex',
+        flexDirection: 'column',
+        minWidth: 0,
+        minHeight: 0,
+        padding: 'var(--mantine-spacing-md)',
       }}
     >
-      <AppShell.Header px="md" withBorder>
-        <Group h="100%" justify="space-between">
-          <Title order={4}>ZeroDrive</Title>
-          <Button
-            variant="subtle"
-            size="xs"
-            onClick={async () => {
-              await driveApi.logout()
-              window.location.href = '/login'
-            }}
-          >
-            退出
-          </Button>
-        </Group>
-      </AppShell.Header>
-      <AppShell.Main>
         {isFileDragActive && (
           <Box
             style={{
@@ -1104,7 +1343,6 @@ export function DrivePage() {
               p="lg"
               style={{
                 border: '2px dashed var(--mantine-color-blue-5)',
-                backgroundColor: 'rgba(255, 255, 255, 0.95)',
               }}
             >
               <Group gap="xs" align="center">
@@ -1144,6 +1382,8 @@ export function DrivePage() {
             onBreadcrumbSegment={onBreadcrumbSegment}
             crumbLabel={crumbLabel}
             draggingNodeId={draggingNodeId}
+            maxVisible={isMobile ? 3 : 4}
+            isMobile={isMobile}
           />
 
         <Box
@@ -1157,16 +1397,60 @@ export function DrivePage() {
             minHeight: 0,
           }}
         >
-          <DriveSidebar
-            flatFolders={flatFolders}
-            rootId={rootId}
-            folderId={folderId}
-            onTreeSelect={(id) => void onTreeSelect(id)}
-            draggingNodeId={draggingNodeId}
-          />
+          {isMobile ? (
+            <Drawer
+              opened={sidebarOpen}
+              onClose={toggleSidebar}
+              size="xs"
+              title="ZeroDrive"
+              overlayProps={{ backgroundOpacity: 0.4 }}
+            >
+              <DriveSidebar
+                flatFolders={flatFolders}
+                rootId={rootId}
+                folderId={folderId}
+                onTreeSelect={(id) => {
+                  toggleSidebar()
+                  void onTreeSelect(id)
+                }}
+                draggingNodeId={draggingNodeId}
+                refreshKey={refreshKey}
+                favoriteNodes={favoriteNodes}
+                onFavoriteContextMenu={handleSidebarFavoriteContextMenu}
+                onSharedFolderContextMenu={handleSharedFolderContextMenu}
+              />
+              <Box mt="md" pt="md" style={{ borderTop: '1px solid var(--mantine-color-default-border)' }}>
+                <Button
+                  fullWidth
+                  variant="subtle"
+                  color="red"
+                  size="xs"
+                  onClick={async () => {
+                    await driveApi.logout()
+                    window.location.href = '/login'
+                  }}
+                >
+                  退出登录
+                </Button>
+              </Box>
+            </Drawer>
+          ) : (
+            <DriveSidebar
+              flatFolders={flatFolders}
+              rootId={rootId}
+              folderId={folderId}
+              onTreeSelect={(id) => void onTreeSelect(id)}
+              draggingNodeId={draggingNodeId}
+              refreshKey={refreshKey}
+              favoriteNodes={favoriteNodes}
+              onFavoriteContextMenu={handleSidebarFavoriteContextMenu}
+              onSharedFolderContextMenu={handleSharedFolderContextMenu}
+            />
+          )}
           <DriveContentPane
-            uploading={uploading}
-            uploadProgress={uploadProgress}
+            isUploading={uploadItems.length > 0}
+            searchQuery={searchQuery}
+            onSearchChange={setSearchQuery}
             viewMode={viewMode}
             onViewModeChange={setViewMode}
             sortKey={sortKey}
@@ -1174,6 +1458,7 @@ export function DrivePage() {
             onSortChange={handleSortChange}
             onNewFolder={newFolder}
             onPickFiles={onPickFiles}
+            canManageCollaborators={canManageCollaborators}
             isOwnFolder={isOwnFolder}
             onManageCollaborators={() =>
               setCollabDialog({
@@ -1181,7 +1466,14 @@ export function DrivePage() {
                 folderName: crumbs.length > 0 ? crumbs[crumbs.length - 1]!.name : '文件夹',
               })
             }
-            tableBody={sortedRows.map((n) => (
+            onCreateShareLink={() =>
+              folderId &&
+              setShareLinkDialog({
+                nodeId: folderId,
+                nodeName: crumbs.length > 0 ? crumbs[crumbs.length - 1]!.name : '文件夹',
+              })
+            }
+            tableBody={displayRows.map((n) => (
               <NodeTableRow
                 key={n.id}
                 node={n}
@@ -1203,12 +1495,17 @@ export function DrivePage() {
                 openMediaPreview={openMediaPreview}
                 onProperties={setPropertiesNode}
                 showOwner={isSharedFolder}
+                onCopyNode={handleCopyNode}
+                onToggleFavorite={handleToggleFavorite}
+                isFavorited={favoriteIds.has(n.id)}
+                onCreateShareLink={handleCreateShareLink}
+                mobile={isMobile}
               />
             ))}
             gridBody={
               viewMode !== 'list' ? (
                 <DriveGrid
-                  nodes={sortedRows}
+                  nodes={displayRows}
                   selectedIds={selectedSet}
                   size={viewMode}
                   onRowClick={handleRowClick}
@@ -1225,6 +1522,9 @@ export function DrivePage() {
                 selectedCount={selectedIds.length}
                 targetNode={contextMenuTargetNode}
                 previewTarget={contextMenuPreviewTarget}
+                isFavorited={contextMenuTargetNode ? favoriteIds.has(contextMenuTargetNode.id) : false}
+                sharedRole={contextMenuTargetNode ? sharedFolderRoles.get(contextMenuTargetNode.id) ?? null : null}
+                hasClipboard={clipboardNode !== null}
                 onOpenChange={(opened) =>
                   setContextMenu((prev) => ({
                     ...prev,
@@ -1260,6 +1560,18 @@ export function DrivePage() {
                     })
                   })()
                 }}
+                onCopyNode={(node) => {
+                  closeContextMenu()
+                  handleCopyNode(node)
+                }}
+                onPasteNode={() => {
+                  closeContextMenu()
+                  void handlePasteNode()
+                }}
+                onToggleFavorite={(node) => {
+                  closeContextMenu()
+                  void handleToggleFavorite(node)
+                }}
                 onRename={(node) => {
                   closeContextMenu()
                   window.setTimeout(() => startRename(node), 0)
@@ -1276,20 +1588,37 @@ export function DrivePage() {
                   closeContextMenu()
                   batchDelete()
                 }}
+                onCreateShareLink={(node) => {
+                  closeContextMenu()
+                  handleCreateShareLink(node)
+                }}
+                onLeaveSharedFolder={(node) => {
+                  closeContextMenu()
+                  void handleLeaveSharedFolder(node)
+                }}
               />
             }
           />
         </Box>
           </Box>
         </DndContext>
+        <FloatingUploadPanel items={uploadItems} onRemove={onRemoveUploadItem} />
         <MediaPreviewModal preview={mediaPreview} onClose={() => setMediaPreview(null)} />
         {collabDialog && (
           <CollaboratorDialog
             folderId={collabDialog.folderId}
             folderName={collabDialog.folderName}
-            isOwner={isOwnFolder}
+            isOwner={canManageCollaborators}
             opened
             onClose={() => setCollabDialog(null)}
+          />
+        )}
+        {shareLinkDialog && (
+          <ShareLinkDialog
+            nodeId={shareLinkDialog.nodeId}
+            nodeName={shareLinkDialog.nodeName}
+            opened
+            onClose={() => setShareLinkDialog(null)}
           />
         )}
         <NodePropertiesModal
@@ -1298,7 +1627,6 @@ export function DrivePage() {
           onReparse={(node) => void reparseMeta(node)}
           onClose={() => setPropertiesNode(null)}
         />
-      </AppShell.Main>
-    </AppShell>
+    </Box>
   )
 }
