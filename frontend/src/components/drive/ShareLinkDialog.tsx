@@ -11,7 +11,6 @@ import {
   Stack,
   Table,
   Text,
-  TextInput,
 } from '@mantine/core'
 import { notifications } from '@mantine/notifications'
 import { IconCheck, IconCopy, IconPlayerPause, IconPlayerPlay, IconTrash } from '@tabler/icons-react'

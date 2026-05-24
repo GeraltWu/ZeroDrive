@@ -13,13 +13,12 @@ import {
   Text,
   TextInput,
 } from '@mantine/core'
-import { useMediaQuery, useMergedRef } from '@mantine/hooks'
+import { useMergedRef } from '@mantine/hooks'
 
 const LAST_FOLDER_KEY = 'zd_last_folder'
 import { modals } from '@mantine/modals'
 import { notifications } from '@mantine/notifications'
 import {
-  IconClipboardCheck,
   IconClipboardCopy,
   IconCopy,
   IconDots,
@@ -1459,7 +1458,6 @@ export function DrivePage() {
             onNewFolder={newFolder}
             onPickFiles={onPickFiles}
             canManageCollaborators={canManageCollaborators}
-            isOwnFolder={isOwnFolder}
             onManageCollaborators={() =>
               setCollabDialog({
                 folderId: folderId!,

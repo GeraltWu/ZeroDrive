@@ -48,14 +48,12 @@ function CrumbOverflowMenu({
   rootId,
   crumbLabel,
   onSegment,
-  draggingId,
 }: {
   items: BreadcrumbItem[]
   crumbs: BreadcrumbItem[]
   rootId: string
   crumbLabel: (c: BreadcrumbItem, rootId: string) => string
   onSegment: (index: number) => void
-  draggingId: string | null
 }) {
   const [opened, setOpened] = useState(false)
 
@@ -173,7 +171,6 @@ export function DriveToolbar({
                         rootId={rootId}
                         crumbLabel={crumbLabel}
                         onSegment={onBreadcrumbSegment}
-                        draggingId={draggingNodeId}
                       />
                       <Text span size="sm" c="dimmed">
                         ›
