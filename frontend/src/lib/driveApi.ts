@@ -1,5 +1,5 @@
 import { api, clearAccessToken, setAccessToken, unwrap } from './api'
-import type { AccessLog, BreadcrumbItem, Collaborator, DriveNode, FolderTreeItem, ShareLink, ShareLinkPublicInfo, ShareLinkWithNode, SharedFolder } from '../types/node'
+import type { AccessLogPage, BreadcrumbItem, Collaborator, DriveNode, FolderTreeItem, ShareLink, ShareLinkPublicInfo, ShareLinkWithNode, SharedFolder } from '../types/node'
 
 export async function fetchRootId(): Promise<string> {
   const res = await api.get('/nodes/root')
@@ -251,9 +251,21 @@ export function absoluteShareUrl(token: string): string {
   return `${window.location.origin}/s/${token}`
 }
 
-export async function listAccessLogs(limit = 200): Promise<AccessLog[]> {
-  const res = await api.get(`/access-logs?limit=${limit}`)
-  return unwrap<AccessLog[]>(res.data)
+export async function listAccessLogs(params?: {
+  shareToken?: string
+  action?: string
+  offset?: number
+  limit?: number
+  sort?: 'asc' | 'desc'
+}): Promise<AccessLogPage> {
+  const qs = new URLSearchParams()
+  if (params?.shareToken) qs.set('share_token', params.shareToken)
+  if (params?.action) qs.set('action', params.action)
+  if (params?.offset !== undefined) qs.set('offset', String(params.offset))
+  if (params?.limit !== undefined) qs.set('limit', String(params.limit))
+  if (params?.sort) qs.set('sort', params.sort)
+  const res = await api.get(`/access-logs?${qs.toString()}`)
+  return unwrap<AccessLogPage>(res.data)
 }
 
 export async function leaveSharedFolder(folderId: string): Promise<void> {

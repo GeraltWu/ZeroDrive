@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.access_log import AccessLog
@@ -35,18 +35,37 @@ async def record(
 async def list_for_owner(
     session: AsyncSession,
     owner_id: str,
-    limit: int = 200,
-) -> list[AccessLogOut]:
-    rows = await session.execute(
+    *,
+    share_token: str | None = None,
+    action: str | None = None,
+    offset: int = 0,
+    limit: int = 50,
+    sort_desc: bool = True,
+) -> tuple[list[AccessLogOut], int]:
+    base = (
         select(AccessLog, Node.name, Node.is_folder, User.username, ShareLink.token)
         .outerjoin(Node, AccessLog.node_id == Node.id)
         .outerjoin(User, AccessLog.visitor_id == User.id)
         .outerjoin(ShareLink, AccessLog.share_link_id == ShareLink.id)
         .where(AccessLog.owner_id == owner_id)
-        .order_by(AccessLog.created_at.desc())
-        .limit(limit)
     )
-    return [
+
+    if share_token:
+        base = base.where(ShareLink.token == share_token)
+    if action:
+        base = base.where(AccessLog.action == action)
+
+    # count
+    count_q = select(func.count()).select_from(base.subquery())
+    total = (await session.execute(count_q)).scalar() or 0
+
+    # rows
+    order = AccessLog.created_at.desc() if sort_desc else AccessLog.created_at.asc()
+    rows = await session.execute(
+        base.order_by(order).offset(offset).limit(limit)
+    )
+
+    items = [
         AccessLogOut(
             id=log.id,
             node_id=log.node_id,
@@ -60,3 +79,4 @@ async def list_for_owner(
         )
         for log, node_name, is_folder, username, token in rows.all()
     ]
+    return items, total

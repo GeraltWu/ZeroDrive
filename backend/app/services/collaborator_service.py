@@ -173,6 +173,31 @@ async def leave_collaboration(
     )
     if not collab:
         raise HTTPException(status_code=404, detail="不在此协作中")
+
+    # Prevent leave if user has access via an ancestor folder
+    node = await session.get(Node, folder_id)
+    cur_id = node.parent_id if node else None
+    while cur_id:
+        ancestor = await session.get(Node, cur_id)
+        if not ancestor:
+            break
+        if ancestor.owner_id == user_id:
+            raise HTTPException(
+                status_code=400,
+                detail="你是上级文件夹的所有者，无法单独退出此子文件夹的协作",
+            )
+        anc_collab = await session.scalar(
+            select(FolderCollaborator).where(
+                FolderCollaborator.folder_id == cur_id,
+                FolderCollaborator.user_id == user_id,
+            )
+        )
+        if anc_collab:
+            raise HTTPException(
+                status_code=400,
+                detail="此文件夹的权限由上级文件夹继承，无法单独退出。请从父文件夹「退出共享」",
+            )
+        cur_id = ancestor.parent_id
     if collab.role == "admin":
         other_admin = await session.scalar(
             select(FolderCollaborator.id).where(

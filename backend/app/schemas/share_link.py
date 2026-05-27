@@ -1,12 +1,18 @@
-from datetime import datetime
+from datetime import UTC, datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class CreateShareLinkBody(BaseModel):
     password: str | None = Field(None, min_length=1, max_length=128)
     expire_in_hours: int | None = Field(None, ge=1)
     max_access_count: int | None = Field(None, ge=1)
+
+
+def _ensure_timezone(v: datetime | None) -> datetime | None:
+    if isinstance(v, datetime) and v.tzinfo is None:
+        return v.replace(tzinfo=UTC)
+    return v
 
 
 class ShareLinkOut(BaseModel):
@@ -21,6 +27,9 @@ class ShareLinkOut(BaseModel):
     is_active: bool = True
     created_at: datetime
     has_password: bool = False
+
+    _fix_expire = field_validator("expire_at", mode="before")(_ensure_timezone)
+    _fix_created = field_validator("created_at", mode="before")(_ensure_timezone)
 
 
 class ShareLinkWithNode(ShareLinkOut):

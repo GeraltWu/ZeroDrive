@@ -1,6 +1,12 @@
-from datetime import datetime
+from datetime import UTC, datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
+
+
+def _ensure_timezone(v: datetime | None) -> datetime | None:
+    if isinstance(v, datetime) and v.tzinfo is None:
+        return v.replace(tzinfo=UTC)
+    return v
 
 
 class AccessLogOut(BaseModel):
@@ -15,3 +21,5 @@ class AccessLogOut(BaseModel):
     share_token: str = ""
     size: int | None = None
     created_at: datetime
+
+    _fix_created = field_validator("created_at", mode="before")(_ensure_timezone)

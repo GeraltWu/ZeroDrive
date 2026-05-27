@@ -18,7 +18,22 @@ Db = Annotated[AsyncSession, Depends(get_db)]
 async def list_access_logs(
     user: CurrentUser,
     db: Db,
-    limit: Annotated[int, Query(ge=1, le=500)] = 200,
+    share_token: Annotated[str | None, Query()] = None,
+    action: Annotated[str | None, Query()] = None,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    sort: Annotated[str, Query(pattern=r"^(asc|desc)$")] = "desc",
 ) -> dict:
-    items = await access_log_service.list_for_owner(db, user.id, limit=limit)
-    return ok([i.model_dump(mode="json") for i in items]).model_dump()
+    items, total = await access_log_service.list_for_owner(
+        db,
+        user.id,
+        share_token=share_token,
+        action=action,
+        offset=offset,
+        limit=limit,
+        sort_desc=sort == "desc",
+    )
+    return ok({
+        "items": [i.model_dump(mode="json") for i in items],
+        "total": total,
+    }).model_dump()

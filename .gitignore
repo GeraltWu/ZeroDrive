@@ -1,6 +1,7 @@
 /backend/data/files
 /backend/.env
 backend/**/__pycache__/
+/backend/data/.db
 *.pyc
 .venv/
 /frontend/node_modules/
@@ -8,3 +9,4 @@ backend/**/__pycache__/
 .DS_Store
 .claude/
 .vscode/
+

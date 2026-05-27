@@ -10,11 +10,30 @@ import {
   Title,
 } from '@mantine/core'
 import { notifications } from '@mantine/notifications'
-import { IconCheck, IconCopy, IconPlayerPause, IconPlayerPlay, IconTrash } from '@tabler/icons-react'
+import { IconCheck, IconCopy, IconHistory, IconPlayerPause, IconPlayerPlay, IconTrash } from '@tabler/icons-react'
+import { useNavigate } from 'react-router-dom'
 import * as driveApi from '../lib/driveApi'
 import type { ShareLinkWithNode } from '../types/node'
 
+function Th({ children, w }: { children: React.ReactNode; w?: number }) {
+  const [hovered, setHovered] = useState(false)
+  return (
+    <Table.Th
+      w={w}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        backgroundColor: hovered ? 'var(--mantine-color-blue-light)' : undefined,
+        transition: 'background-color 150ms ease',
+      }}
+    >
+      {children}
+    </Table.Th>
+  )
+}
+
 export function ShareLinksPage() {
+  const navigate = useNavigate()
   const [links, setLinks] = useState<ShareLinkWithNode[]>([])
 
   const load = useCallback(() => {
@@ -63,13 +82,13 @@ export function ShareLinksPage() {
         >
           <Table.Thead>
             <Table.Tr>
-              <Table.Th>文件 / 文件夹</Table.Th>
-              <Table.Th>链接</Table.Th>
-              <Table.Th>密码</Table.Th>
-              <Table.Th>过期时间</Table.Th>
-              <Table.Th>访问次数</Table.Th>
-              <Table.Th w={100}>状态</Table.Th>
-              <Table.Th w={80}>操作</Table.Th>
+              <Th>文件 / 文件夹</Th>
+              <Th>链接</Th>
+              <Th>密码</Th>
+              <Th>过期时间</Th>
+              <Th>访问次数</Th>
+              <Th w={100}>状态</Th>
+              <Th w={120}>操作</Th>
             </Table.Tr>
           </Table.Thead>
           <Table.Tbody>
@@ -82,9 +101,7 @@ export function ShareLinksPage() {
                 </Table.Td>
                 <Table.Td>
                   <Group gap={4} wrap="nowrap">
-                    <Text truncate maw={130}>
-                      /s/{link.token.slice(0, 10)}…
-                    </Text>
+                    <Text size="sm">/s/{link.token}</Text>
                     <CopyButton value={driveApi.absoluteShareUrl(link.token)}>
                       {({ copied, copy }) => (
                         <ActionIcon size="sm" variant="subtle" color={copied ? 'teal' : 'gray'} onClick={copy}>
@@ -108,11 +125,20 @@ export function ShareLinksPage() {
                 </Table.Td>
                 <Table.Td>
                   <Group gap={4}>
+                    <ActionIcon
+                      size="sm"
+                      variant="subtle"
+                      color="gray"
+                      onClick={() => navigate(`/access-logs?share_token=${encodeURIComponent(link.token)}`)}
+                      title="访问记录"
+                    >
+                      <IconHistory size={18} />
+                    </ActionIcon>
                     <ActionIcon size="sm" variant="subtle" color={link.is_active ? 'yellow' : 'teal'} onClick={() => handleToggle(link.id)}>
-                      {link.is_active ? <IconPlayerPause size={14} /> : <IconPlayerPlay size={14} />}
+                      {link.is_active ? <IconPlayerPause size={18} /> : <IconPlayerPlay size={18} />}
                     </ActionIcon>
                     <ActionIcon size="sm" variant="subtle" color="red" onClick={() => handleRevoke(link.id)}>
-                      <IconTrash size={14} />
+                      <IconTrash size={18} />
                     </ActionIcon>
                   </Group>
                 </Table.Td>

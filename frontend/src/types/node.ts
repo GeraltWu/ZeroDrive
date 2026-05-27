@@ -70,6 +70,11 @@ export interface AccessLog {
   created_at: string
 }
 
+export interface AccessLogPage {
+  items: AccessLog[]
+  total: number
+}
+
 export interface ShareLinkPublicInfo {
   node_name: string
   is_folder: boolean

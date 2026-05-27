@@ -1,6 +1,12 @@
-from datetime import datetime
+from datetime import UTC, datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+def _ensure_timezone(v: datetime | None) -> datetime | None:
+    if isinstance(v, datetime) and v.tzinfo is None:
+        return v.replace(tzinfo=UTC)
+    return v
 
 
 class CollaboratorOut(BaseModel):
@@ -12,6 +18,8 @@ class CollaboratorOut(BaseModel):
     username: str
     role: str
     created_at: datetime
+
+    _fix_created = field_validator("created_at", mode="before")(_ensure_timezone)
 
 
 class CreateCollaboratorBody(BaseModel):
