@@ -70,6 +70,16 @@ export interface AccessLog {
   created_at: string
 }
 
+export interface AdminUser {
+  id: string
+  username: string
+  is_admin: boolean
+  is_active: boolean
+  file_count: number
+  storage: number
+  created_at: string
+}
+
 export interface AccessLogPage {
   items: AccessLog[]
   total: number

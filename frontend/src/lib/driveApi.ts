@@ -1,5 +1,5 @@
 import { api, clearAccessToken, setAccessToken, unwrap } from './api'
-import type { AccessLogPage, BreadcrumbItem, Collaborator, DriveNode, FolderTreeItem, ShareLink, ShareLinkPublicInfo, ShareLinkWithNode, SharedFolder } from '../types/node'
+import type { AccessLogPage, AdminUser, BreadcrumbItem, Collaborator, DriveNode, FolderTreeItem, ShareLink, ShareLinkPublicInfo, ShareLinkWithNode, SharedFolder } from '../types/node'
 
 export async function fetchRootId(): Promise<string> {
   const res = await api.get('/nodes/root')
@@ -106,7 +106,7 @@ export async function logout(): Promise<void> {
   }
 }
 
-export async function me(): Promise<{ username: string }> {
+export async function me(): Promise<{ username: string; is_admin: boolean }> {
   const res = await api.get('/auth/me')
   return unwrap<{ username: string }>(res.data)
 }
@@ -206,6 +206,25 @@ export async function toggleShareLink(linkId: string): Promise<ShareLink> {
 export async function listAllShareLinks(): Promise<ShareLinkWithNode[]> {
   const res = await api.get('/share-links')
   return unwrap<ShareLinkWithNode[]>(res.data)
+}
+
+// Admin
+
+export async function listAdminUsers(): Promise<AdminUser[]> {
+  const res = await api.get('/admin/users')
+  return unwrap<AdminUser[]>(res.data)
+}
+
+export async function updateAdminUser(
+  targetId: string,
+  data: { is_admin?: boolean; is_active?: boolean },
+): Promise<AdminUser> {
+  const res = await api.patch(`/admin/users/${targetId}`, data)
+  return unwrap<AdminUser>(res.data)
+}
+
+export async function deleteAdminUser(targetId: string): Promise<void> {
+  await api.delete(`/admin/users/${targetId}`)
 }
 
 // Public share — use fetch() to avoid auth interceptor

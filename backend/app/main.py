@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.api.routes import access_logs, auth, bot, collaborators, favorites, nodes, shares
+from app.api.routes import access_logs, admin, auth, bot, collaborators, favorites, nodes, shares
 from app.core.config import get_settings
 from app.db.base import Base
 from app.db.session import engine
@@ -39,14 +39,18 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         # Migration: add is_active column if upgrading from v1
-        try:
-            await conn.run_sync(
-                lambda sync_conn: sync_conn.exec_driver_sql(
-                    "ALTER TABLE share_links ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 1"
+        for col, col_def in [
+            ("is_admin", "BOOLEAN NOT NULL DEFAULT 0"),
+            ("is_active", "BOOLEAN NOT NULL DEFAULT 1"),
+        ]:
+            try:
+                await conn.run_sync(
+                    lambda sync_conn, c=col, d=col_def: sync_conn.exec_driver_sql(
+                        f"ALTER TABLE users ADD COLUMN {c} {d}"
+                    )
                 )
-            )
-        except Exception:
-            pass  # column already exists
+            except Exception:
+                pass
     yield
     await engine.dispose()
 
@@ -142,3 +146,4 @@ app.include_router(favorites.router, prefix="/api/favorites", tags=["favorites"]
 app.include_router(shares.router, prefix="/api/share-links", tags=["share-links"])
 app.include_router(shares.public_router, prefix="/api/public/share", tags=["public"])
 app.include_router(access_logs.router, prefix="/api/access-logs", tags=["access-logs"])
+app.include_router(admin.router, prefix="/api/admin", tags=["admin"])

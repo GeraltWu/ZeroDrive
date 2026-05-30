@@ -1400,8 +1400,9 @@ export function DrivePage() {
             <Drawer
               opened={sidebarOpen}
               onClose={toggleSidebar}
+              position="right"
               size="xs"
-              title="ZeroDrive"
+              title="目录"
               overlayProps={{ backgroundOpacity: 0.4 }}
             >
               <DriveSidebar

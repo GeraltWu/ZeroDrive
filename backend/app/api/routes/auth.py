@@ -1,4 +1,4 @@
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -21,9 +21,12 @@ async def register(body: RegisterBody, db: Db = Depends(get_db)) -> dict:
     exists = (await db.execute(q)).scalar_one_or_none()
     if exists:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="用户名已存在")
+    # First user is automatically admin
+    count = (await db.execute(select(func.count(User.id)))).scalar() or 0
     user = User(
         username=body.username.strip(),
         password_hash=hash_password(body.password),
+        is_admin=count == 0,
     )
     db.add(user)
     await db.flush()
@@ -37,6 +40,8 @@ async def login(body: LoginBody, db: Db = Depends(get_db)) -> dict:
     user = (await db.execute(q)).scalar_one_or_none()
     if not user or not verify_password(body.password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="账号或密码错误")
+    if not user.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="账号已被禁用")
     token = create_access_token(user.id)
     payload = LoginOut(access_token=token, username=user.username)
     return ok(payload.model_dump()).model_dump()
@@ -49,4 +54,4 @@ async def logout(_: CurrentUser) -> dict:
 
 @router.get("/me")
 async def me(user: CurrentUser) -> dict:
-    return ok({"username": user.username}).model_dump()
+    return ok({"username": user.username, "is_admin": user.is_admin}).model_dump()
